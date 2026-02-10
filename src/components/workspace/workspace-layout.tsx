@@ -426,6 +426,7 @@ export function WorkspaceLayout() {
             rightHeaderActionsComponent={AddTabButton}
             watermarkComponent={EmptyState}
             disableFloatingGroups
+            disableTabsOverflowList
             scrollbars="native"
           />
         </div>

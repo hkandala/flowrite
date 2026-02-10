@@ -177,7 +177,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     if (!el) return;
 
     const onScroll = () => {
-      setShowButtons(false);
+      setShowButtons((prev) => (prev ? false : prev));
       if (btnTimerRef.current) clearTimeout(btnTimerRef.current);
 
       scrollingRef.current = true;
@@ -212,6 +212,8 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     const container = containerRef.current;
     if (!container || !editor) return;
 
+    let rafId = 0;
+
     const disableTabOnFocusables = () => {
       container
         .querySelectorAll<HTMLElement>(
@@ -221,10 +223,16 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     };
 
     disableTabOnFocusables();
-    const observer = new MutationObserver(disableTabOnFocusables);
+    const observer = new MutationObserver(() => {
+      cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(disableTabOnFocusables);
+    });
     observer.observe(container, { childList: true, subtree: true });
 
-    return () => observer.disconnect();
+    return () => {
+      observer.disconnect();
+      cancelAnimationFrame(rafId);
+    };
   }, [editor]);
 
   // focus editor when tab-bar interaction requests it
