@@ -238,6 +238,7 @@ export function FileTreePane() {
   // loading state
   const [isExpandingAll, setIsExpandingAll] = useState(false);
   const [isRefreshing, setIsRefreshing] = useState(false);
+  const [rootLoaded, setRootLoaded] = useState(false);
 
   // recursive data for expand all & filtering
   const [allRecursiveItems, setAllRecursiveItems] = useState<FSEntry[]>([]);
@@ -275,6 +276,7 @@ export function FileTreePane() {
         }
 
         childrenCacheRef.current.set(itemId, childIds);
+        if (itemId === ROOT_ID) setRootLoaded(true);
         return childIds;
       } catch {
         return [];
@@ -442,6 +444,9 @@ export function FileTreePane() {
 
   const items = tree.getItems();
 
+  // allRecursiveItems is used as a dep so the memo recalculates after
+  // fetchAllRecursive populates the cache. Using `items` here would cause an
+  // infinite loop because expanding ancestor folders changes `items`.
   const { matchingIds, ancestorIds } = useMemo(() => {
     if (!filterValue)
       return {
@@ -466,7 +471,7 @@ export function FileTreePane() {
     }
 
     return { matchingIds: matching, ancestorIds: ancestors };
-  }, [items, filterValue]);
+  }, [allRecursiveItems, filterValue]);
 
   // auto-expand ancestor folders when filter matches change
   useEffect(() => {
@@ -667,6 +672,7 @@ export function FileTreePane() {
     }
     setAllRecursiveItems([]);
     setIsRefreshing(true);
+    setRootLoaded(false);
 
     try {
       const rootInstance = tree.getItemInstance(ROOT_ID);
@@ -888,7 +894,13 @@ export function FileTreePane() {
         >
           {visibleItems.length === 0 ? (
             <div className="file-tree-empty">
-              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/40" />
+              {rootLoaded ? (
+                <span className="text-xs text-muted-foreground/50">
+                  {filterValue ? "no matches" : "no files yet"}
+                </span>
+              ) : (
+                <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/40" />
+              )}
             </div>
           ) : (
             visibleItems.map((item) => {
