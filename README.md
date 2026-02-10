@@ -1,7 +1,30 @@
-# Tauri + React + Typescript
+# flowrite
 
-This template should help get you started developing with Tauri, React and Typescript in Vite.
+a markdown editor, reimagined for the age of ai agents.
 
-## Recommended IDE Setup
+## about
 
-- [VS Code](https://code.visualstudio.com/) + [Tauri](https://marketplace.visualstudio.com/items?itemName=tauri-apps.tauri-vscode) + [rust-analyzer](https://marketplace.visualstudio.com/items?itemName=rust-lang.rust-analyzer)
+flowrite is an ai-native markdown editor with built-in support for ai agents via the agent client protocol (acp). connect any acp-compatible agent — claude code, opencode, codex, gemini cli, or your own — and let them read, edit, and review your documents alongside you.
+
+### features
+
+- rich markdown editing powered by platejs
+- connect any acp-supported agent as a collaborator
+- add comments and let agents resolve them
+- ask agents to review your docs and leave feedback
+- file tree with search and folder management
+- markdown file management using `nb` cli
+- tabbed multi-document workspace
+
+## development
+
+```bash
+pnpm install
+pnpm tauri dev
+```
+
+## build
+
+```bash
+pnpm tauri build
+```

@@ -1,5 +1,6 @@
 {
   "name": "flowrite",
+  "description": "a markdown editor, reimagined for the age of ai agents",
   "private": true,
   "version": "0.1.0",
   "type": "module",

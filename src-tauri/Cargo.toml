@@ -1,7 +1,7 @@
 [package]
 name = "flowrite"
 version = "0.1.0"
-description = "A Tauri App"
+description = "a markdown editor, reimagined for the age of ai agents"
 authors = ["you"]
 edition = "2021"
 
