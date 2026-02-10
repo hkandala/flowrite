@@ -1,0 +1,423 @@
+use cocoa::base::{id, BOOL, YES};
+use objc::msg_send;
+use serde::Serialize;
+use tauri::{
+    utils::config::WindowEffectsConfig,
+    window::{Effect, EffectState},
+    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+};
+use tokio::fs;
+
+use crate::{
+    constants::{
+        WORKSPACE_WINDOW_HEIGHT, WORKSPACE_WINDOW_LABEL_PREFIX, WORKSPACE_WINDOW_MIN_HEIGHT,
+        WORKSPACE_WINDOW_MIN_WIDTH, WORKSPACE_WINDOW_WIDTH,
+    },
+    nb,
+    utils::{resolve_path, split_path},
+};
+
+#[derive(Serialize)]
+pub struct FSEntry {
+    // relative path from base directory
+    pub path: String,
+    pub is_dir: bool,
+    pub size_bytes: u64,
+    pub created_time_ms: u64,
+    pub modified_time_ms: u64,
+}
+
+// -----------------------------------------
+// traffic lights
+// -----------------------------------------
+
+#[tauri::command]
+pub fn set_traffic_lights_visible(window: WebviewWindow, visible: bool) {
+    let Ok(ns_win) = window.ns_window() else {
+        return;
+    };
+    let ns_window: id = ns_win as _;
+    let hidden: BOOL = if visible { cocoa::base::NO } else { YES };
+
+    unsafe {
+        for i in 0..3usize {
+            let button: id = msg_send![ns_window, standardWindowButton: i];
+            if !button.is_null() {
+                let _: () = msg_send![button, setHidden: hidden];
+            }
+        }
+    }
+}
+
+// -----------------------------------------
+// workspace window commands
+// -----------------------------------------
+
+/// creates a new workspace window with a unique label
+#[tauri::command]
+pub fn create_workspace_window(app_handle: AppHandle) -> Result<String, String> {
+    let label = generate_workspace_label();
+    log::info!("creating workspace window: {label}");
+
+    WebviewWindowBuilder::new(&app_handle, &label, WebviewUrl::App("#/workspace".into()))
+        .title("flowrite")
+        .inner_size(WORKSPACE_WINDOW_WIDTH, WORKSPACE_WINDOW_HEIGHT)
+        .min_inner_size(WORKSPACE_WINDOW_MIN_WIDTH, WORKSPACE_WINDOW_MIN_HEIGHT)
+        .center()
+        .resizable(true)
+        .hidden_title(true)
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .transparent(true)
+        .disable_drag_drop_handler() // disable native drag and drop to allow HTML5 dnd (dockview)
+        .effects(WindowEffectsConfig {
+            effects: vec![Effect::HudWindow],
+            state: Some(EffectState::FollowsWindowActiveState),
+            radius: Some(20.0),
+            color: None,
+        })
+        .build()
+        .map_err(|e| format!("failed to create workspace window: {e}"))?;
+
+    // show dock icon when workspace window is created
+    let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
+    log::info!("created workspace window: {label}, switched to regular activation policy");
+
+    Ok(label)
+}
+
+/// generates a unique workspace window label using timestamp
+fn generate_workspace_label() -> String {
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_millis();
+    format!("{}-{}", WORKSPACE_WINDOW_LABEL_PREFIX, timestamp)
+}
+
+/// shows an existing workspace window or creates a new one if none exist
+pub fn show_or_create_workspace_window(app_handle: &AppHandle) {
+    // find any existing workspace window
+    let existing_workspace = app_handle
+        .webview_windows()
+        .into_iter()
+        .find(|(label, _)| label.starts_with(WORKSPACE_WINDOW_LABEL_PREFIX));
+
+    if let Some((label, window)) = existing_workspace {
+        log::info!("showing existing workspace window: {label}");
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        // no workspace window exists, create one
+        let _ = create_workspace_window(app_handle.clone());
+    }
+}
+
+/// checks if any workspace windows exist and updates activation policy accordingly
+pub fn update_activation_policy_for_workspace(app_handle: &AppHandle) {
+    let has_workspace_windows = app_handle
+        .webview_windows()
+        .keys()
+        .any(|label| label.starts_with(WORKSPACE_WINDOW_LABEL_PREFIX));
+
+    if has_workspace_windows {
+        // workspace windows exist, show in dock
+        let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
+        log::info!("workspace windows exist, using regular activation policy");
+    } else {
+        // no workspace windows, hide from dock
+        let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
+        log::info!("no workspace windows, using accessory activation policy");
+    }
+}
+
+// -----------------------------------------
+// file management commands
+// -----------------------------------------
+
+#[tauri::command]
+pub async fn create_dir(app_handle: AppHandle, path: String) -> Result<(), String> {
+    log::info!("creating directory: {path}");
+
+    let dir_path = resolve_path(&app_handle, &path)?;
+
+    fs::create_dir_all(&dir_path)
+        .await
+        .map_err(|e| format!("failed to create directory '{path}': {e}"))?;
+
+    log::info!("created directory: {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn list_dir(
+    app_handle: AppHandle,
+    path: String,
+    recursive: Option<bool>,
+) -> Result<Vec<FSEntry>, String> {
+    let recursive = recursive.unwrap_or(false);
+    log::info!("listing directory: {path} (recursive: {recursive})");
+
+    let dir_path = resolve_path(&app_handle, &path)?;
+
+    if !dir_path.exists() {
+        return Err(format!("directory '{path}' does not exist"));
+    }
+
+    let mut files = Vec::new();
+    list_dir_inner(&dir_path, &path, recursive, &mut files).await?;
+
+    log::info!("listed {} entries in '{path}'", files.len());
+
+    Ok(files)
+}
+
+/// internal recursive directory listing helper
+async fn list_dir_inner(
+    dir_path: &std::path::Path,
+    relative_prefix: &str,
+    recursive: bool,
+    files: &mut Vec<FSEntry>,
+) -> Result<(), String> {
+    let mut entries = fs::read_dir(dir_path)
+        .await
+        .map_err(|e| format!("failed to read directory '{}': {e}", relative_prefix))?;
+
+    while let Some(entry) = entries
+        .next_entry()
+        .await
+        .map_err(|e| format!("failed to read directory entry: {e}"))?
+    {
+        let entry_path = entry.path();
+        if let Some(name) = entry_path.file_name().and_then(|s| s.to_str()) {
+            // skip hidden files/directories (starting with .)
+            if name.starts_with('.') {
+                continue;
+            }
+
+            let metadata = fs::metadata(&entry_path)
+                .await
+                .map_err(|e| format!("failed to read metadata for '{name}': {e}"))?;
+
+            let is_dir = metadata.is_dir();
+
+            // skip non-.md files (only show markdown files and directories)
+            if !is_dir && !name.ends_with(".md") {
+                continue;
+            }
+
+            let size_bytes = metadata.len();
+
+            let created = metadata
+                .created()
+                .map_err(|e| format!("failed to get creation time for '{name}': {e}"))?;
+            let created_time_ms = created
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("failed to convert creation time for '{name}': {e}"))?
+                .as_millis() as u64;
+
+            let modified = metadata
+                .modified()
+                .map_err(|e| format!("failed to get modification time for '{name}': {e}"))?;
+            let modified_time_ms = modified
+                .duration_since(std::time::UNIX_EPOCH)
+                .map_err(|e| format!("failed to convert modification time for '{name}': {e}"))?
+                .as_millis() as u64;
+
+            // construct full relative path
+            let entry_relative_path = if relative_prefix.is_empty() {
+                name.to_string()
+            } else {
+                format!("{}/{}", relative_prefix, name)
+            };
+
+            files.push(FSEntry {
+                path: entry_relative_path.clone(),
+                is_dir,
+                size_bytes,
+                created_time_ms,
+                modified_time_ms,
+            });
+
+            // recurse into subdirectories if recursive flag is set
+            if recursive && is_dir {
+                Box::pin(list_dir_inner(
+                    &entry_path,
+                    &entry_relative_path,
+                    true,
+                    files,
+                ))
+                .await?;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_dir(app_handle: AppHandle, path: String) -> Result<(), String> {
+    log::info!("deleting directory: {path}");
+
+    let dir_path = resolve_path(&app_handle, &path)?;
+
+    fs::remove_dir_all(&dir_path)
+        .await
+        .map_err(|e| format!("failed to delete directory '{path}': {e}"))?;
+
+    // reconcile nb index after directory deletion
+    let app_handle_clone = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = nb::reconcile_index(&app_handle_clone).await {
+            log::warn!("nb index reconciliation failed after delete_dir: {}", e);
+        }
+    });
+
+    log::info!("deleted directory: {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_dir(
+    app_handle: AppHandle,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    log::info!("renaming directory: {old_path} -> {new_path}");
+
+    let old_dir = resolve_path(&app_handle, &old_path)?;
+    let new_dir = resolve_path(&app_handle, &new_path)?;
+
+    fs::rename(&old_dir, &new_dir)
+        .await
+        .map_err(|e| format!("failed to rename directory '{old_path}' to '{new_path}': {e}"))?;
+
+    // reconcile nb index after directory rename
+    let app_handle_clone = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = nb::reconcile_index(&app_handle_clone).await {
+            log::warn!("nb index reconciliation failed after rename_dir: {}", e);
+        }
+    });
+
+    log::info!("renamed directory: {old_path} -> {new_path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn create_file(
+    app_handle: AppHandle,
+    path: String,
+    content: Option<String>,
+) -> Result<FSEntry, String> {
+    log::info!("creating file via nb: {path}");
+
+    let file_path = resolve_path(&app_handle, &path)?;
+
+    // check if file already exists
+    if file_path.exists() {
+        return Err(format!("file '{path}' already exists"));
+    }
+
+    let (folder, _) = split_path(&path);
+
+    // ensure parent folders exist (filesystem operation)
+    if !folder.is_empty() {
+        let folder_path = resolve_path(&app_handle, &folder)?;
+        fs::create_dir_all(&folder_path)
+            .await
+            .map_err(|e| format!("failed to create folders: {e}"))?;
+    }
+
+    // use nb to create file with optional initial content
+    let initial_content = content.unwrap_or_default();
+    nb::create_file(&app_handle, &path, &initial_content).await?;
+
+    // get metadata from filesystem
+    let metadata = fs::metadata(&file_path)
+        .await
+        .map_err(|e| format!("failed to get metadata: {e}"))?;
+
+    let created = metadata
+        .created()
+        .map_err(|e| format!("failed to get creation time: {e}"))?;
+    let created_time_ms = created
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("failed to convert creation time: {e}"))?
+        .as_millis() as u64;
+
+    let modified = metadata
+        .modified()
+        .map_err(|e| format!("failed to get modification time: {e}"))?;
+    let modified_time_ms = modified
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|e| format!("failed to convert modification time: {e}"))?
+        .as_millis() as u64;
+
+    log::info!("created file via nb: {path}");
+
+    Ok(FSEntry {
+        path,
+        is_dir: false,
+        size_bytes: 0,
+        created_time_ms,
+        modified_time_ms,
+    })
+}
+
+#[tauri::command]
+pub async fn read_file(app_handle: AppHandle, path: String) -> Result<String, String> {
+    log::info!("reading file via nb: {path}");
+
+    let content = nb::read_file(&app_handle, &path).await?;
+
+    log::info!("read file via nb: {path}");
+
+    Ok(content)
+}
+
+#[tauri::command]
+pub async fn update_file(
+    app_handle: AppHandle,
+    path: String,
+    content: String,
+) -> Result<(), String> {
+    log::info!("updating file via nb: {path}");
+
+    nb::update_file(&app_handle, &path, &content).await?;
+
+    log::info!("updated file via nb: {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_file(app_handle: AppHandle, path: String) -> Result<(), String> {
+    log::info!("deleting file via nb: {path}");
+
+    nb::delete_file(&app_handle, &path).await?;
+
+    log::info!("deleted file via nb: {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_file(
+    app_handle: AppHandle,
+    old_path: String,
+    new_path: String,
+) -> Result<(), String> {
+    log::info!("renaming file via nb: {old_path} -> {new_path}");
+
+    // extract just filename for rename
+    let new_filename = new_path.rsplit('/').next().unwrap_or(&new_path);
+
+    nb::rename_file(&app_handle, &old_path, new_filename).await?;
+
+    log::info!("renamed file via nb: {old_path} -> {new_path}");
+
+    Ok(())
+}
