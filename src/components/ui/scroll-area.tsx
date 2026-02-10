@@ -61,6 +61,7 @@ const ScrollArea = React.forwardRef<
 
     React.useEffect(() => {
       if (typeof window === "undefined") return;
+      if (maskHeight === 0) return;
 
       const element = viewportRef.current;
       if (!element) return;
@@ -81,7 +82,7 @@ const ScrollArea = React.forwardRef<
         controller.abort();
         resizeObserver.disconnect();
       };
-    }, [checkScrollability, isTouch]);
+    }, [checkScrollability, isTouch, maskHeight]);
 
     return (
       <ScrollAreaContext.Provider value={isTouch}>

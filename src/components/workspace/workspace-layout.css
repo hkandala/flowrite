@@ -256,9 +256,10 @@
 
 /* ---- editor pane scroll area fix ----
    radix scroll area wraps children in a display:table div inside
-   the viewport. this causes calc(50%) based padding to shift on
-   re-renders. display:contents removes the wrapper from the layout
-   tree so children size directly against the viewport. */
+   the viewport. the table layout algorithm sizes to content, which
+   causes calc(50%) based padding to shift as width fluctuates.
+   display:block uses standard block layout (width: 100% of parent)
+   while preserving the box model that radix's ResizeObserver needs. */
 .editor-pane-scroll-area [data-slot="scroll-area-viewport"] > div {
-  display: contents !important;
+  display: block !important;
 }
