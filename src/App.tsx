@@ -3,7 +3,6 @@ import { Router, Route, Switch, Redirect } from "wouter";
 import { useHashLocation } from "wouter/use-hash-location";
 
 import { listen } from "@tauri-apps/api/event";
-import { exit } from "@tauri-apps/api/process";
 
 import { ThemeProvider } from "@/components/ui/theme-provider";
 import Workspace from "@/components/workspace/workspace";
@@ -34,23 +33,6 @@ export function App() {
       unlisten.then((fn) => fn());
     };
   }, [setTheme]);
-
-  // cmd+q to quit directly
-  useEffect(() => {
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (!event.metaKey) return;
-      if (event.key.toLowerCase() !== "q") return;
-      if (event.repeat) return;
-
-      event.preventDefault();
-      exit(0);
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-    };
-  }, []);
 
   return (
     <ThemeProvider>

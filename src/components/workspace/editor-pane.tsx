@@ -74,9 +74,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   const [showButtons, setShowButtons] = useState(false);
 
   const containerRef = useRef<HTMLDivElement>(null);
-  const btnTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const btnTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
   const scrollingRef = useRef(false);
-  const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>();
+  const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const editorMaximized = useWorkspaceStore((s) => s.editorMaximized);
   const toggleEditorMaximized = useWorkspaceStore(

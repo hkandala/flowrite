@@ -1,5 +1,7 @@
+#[allow(deprecated)]
+
 use cocoa::base::{id, BOOL, YES};
-use objc::msg_send;
+use objc::{msg_send, sel, sel_impl};
 use serde::Serialize;
 use tauri::{
     utils::config::WindowEffectsConfig,
@@ -31,6 +33,7 @@ pub struct FSEntry {
 // traffic lights
 // -----------------------------------------
 
+#[allow(deprecated)]
 #[tauri::command]
 pub fn set_traffic_lights_visible(window: WebviewWindow, visible: bool) {
     let Ok(ns_win) = window.ns_window() else {

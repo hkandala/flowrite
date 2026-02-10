@@ -1,5 +1,5 @@
 use tauri::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{AppHandle, Manager, RunEvent, WindowEvent};
+use tauri::{Manager, RunEvent, WindowEvent};
 
 mod command;
 mod constants;
