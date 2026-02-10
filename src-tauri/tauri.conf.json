@@ -10,16 +10,12 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "flowrite",
-        "width": 800,
-        "height": 600
-      }
-    ],
+    "windows": [],
     "security": {
+      "capabilities": ["default"],
       "csp": null
-    }
+    },
+    "macOSPrivateApi": true
   },
   "bundle": {
     "active": true,
