@@ -1,0 +1,292 @@
+/* ---- file tree pane ---- */
+
+.file-tree-pane {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+  padding: 10px;
+  padding-left: 20px;
+  padding-right: 5px;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* ---- header ---- */
+
+.file-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px 6px 12px;
+  height: 32px;
+  flex-shrink: 0;
+}
+
+.file-tree-title {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--muted-foreground);
+  user-select: none;
+}
+
+.file-tree-actions {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+}
+
+.file-tree-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 5px;
+  color: var(--muted-foreground);
+  transition: all 150ms ease;
+}
+
+.file-tree-btn:hover {
+  background: oklch(from var(--foreground) l c h / 0.06);
+  color: var(--foreground);
+}
+
+.file-tree-btn.active {
+  background: oklch(from var(--foreground) l c h / 0.08);
+  color: var(--foreground);
+}
+
+.file-tree-btn:disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.file-tree-btn:focus-visible,
+.file-tree-filter-clear:focus-visible {
+  outline: none;
+  box-shadow: inset 0 0 0 1px oklch(from var(--brand) l c h / 0.55);
+}
+
+/* ---- filter bar ---- */
+
+.file-tree-filter {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 12px 6px;
+  flex-shrink: 0;
+}
+
+.file-tree-filter-input {
+  flex: 1;
+  min-width: 0;
+  background: transparent;
+  border: none;
+  outline: none;
+  font-size: 11px;
+  color: var(--foreground);
+  font-family: inherit;
+}
+
+.file-tree-filter-input::placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+
+.file-tree-filter-input:focus-visible {
+  outline: none;
+}
+
+.file-tree-filter-clear {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border-radius: 3px;
+  color: var(--muted-foreground);
+  flex-shrink: 0;
+  transition: all 150ms ease;
+}
+
+.file-tree-filter-clear:hover {
+  background: oklch(from var(--foreground) l c h / 0.08);
+  color: var(--foreground);
+}
+
+/* ---- scroll area ---- */
+
+.file-tree-scroll {
+  flex: 1;
+  min-height: 0;
+}
+
+/* radix scroll area wraps children in a display:table div inside
+   the viewport. display:contents removes this wrapper from the layout
+   tree so the tree container can size directly against the viewport
+   and min-height:100% works — making empty space below items clickable. */
+.file-tree-scroll [data-slot="scroll-area-viewport"] > div {
+  display: contents !important;
+}
+
+/* ---- tree container ---- */
+
+.file-tree-container {
+  padding: 2px 0;
+  outline: none;
+  position: relative;
+  min-height: 100%;
+  border-radius: 8px;
+}
+
+.file-tree-container.keyboard-focused {
+  box-shadow: inset 0 0 0 1px oklch(from var(--brand) l c h / 0.45);
+}
+
+/* ---- empty / loading state ---- */
+
+.file-tree-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 32px 0;
+}
+
+/* ---- tree item ---- */
+
+.file-tree-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 26px;
+  padding-right: 8px;
+  cursor: default;
+  font-size: 11px;
+  color: var(--foreground);
+  outline: none;
+  user-select: none;
+  border-radius: 10px;
+  transition:
+    background-color 80ms ease,
+    opacity 150ms ease;
+}
+
+.file-tree-item:hover {
+  background: oklch(from var(--foreground) l c h / 0.04);
+}
+
+.file-tree-item.selected {
+  background: oklch(from var(--foreground) l c h / 0.08);
+}
+
+.file-tree-container:focus-within .file-tree-item.focused {
+  box-shadow: inset 0 0 0 1px oklch(from var(--foreground) l c h / 0.1);
+}
+
+.file-tree-item.dimmed {
+  opacity: 0.25;
+}
+
+.file-tree-item.highlighted {
+  background: oklch(from var(--brand) l c h / 0.08);
+}
+
+.file-tree-item.highlighted:hover {
+  background: oklch(from var(--brand) l c h / 0.12);
+}
+
+.file-tree-item.drag-target {
+  background: oklch(from var(--brand) l c h / 0.1);
+  border-radius: 4px;
+}
+
+.file-tree-item.drag-above {
+  box-shadow: inset 0 2px 0 0 var(--brand);
+}
+
+.file-tree-item.drag-below {
+  box-shadow: inset 0 -2px 0 0 var(--brand);
+}
+
+/* ---- guide lines ---- */
+
+.file-tree-guide {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: oklch(from var(--foreground) l c h / 0.06);
+  pointer-events: none;
+}
+
+/* ---- chevron ---- */
+
+.file-tree-chevron {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--muted-foreground);
+}
+
+/* ---- item name ---- */
+
+.file-tree-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- rename input ---- */
+
+.file-tree-rename-input {
+  flex: 1;
+  min-width: 0;
+  background: oklch(from var(--foreground) l c h / 0.06);
+  border: 1px solid oklch(from var(--foreground) l c h / 0.12);
+  border-radius: 4px;
+  padding: 1px 6px;
+  font-size: 11px;
+  font-family: inherit;
+  color: var(--foreground);
+  outline: none;
+  height: 20px;
+}
+
+.file-tree-rename-input:focus {
+  border-color: var(--brand);
+  box-shadow: 0 0 0 1px oklch(from var(--brand) l c h / 0.2);
+}
+
+/* ---- drag line ---- */
+
+.file-tree-drag-line {
+  position: absolute;
+  height: 2px;
+  background: var(--brand);
+  border-radius: 1px;
+  pointer-events: none;
+  z-index: 10;
+}
+
+/* ---- loading pulse ---- */
+
+@keyframes tree-pulse {
+  0%,
+  100% {
+    opacity: 0.4;
+  }
+  50% {
+    opacity: 0.15;
+  }
+}
+
+.file-tree-loading-item {
+  animation: tree-pulse 1.5s ease-in-out infinite;
+}
