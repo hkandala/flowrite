@@ -34,3 +34,5 @@ objc = "0.2"
 cocoa = "0.26"
 notify = "7"
 
+[features]
+cargo-clippy = []

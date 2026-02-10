@@ -1,4 +1,4 @@
-#[allow(deprecated)]
+#![allow(deprecated)]
 
 use cocoa::base::{id, BOOL, YES};
 use objc::{msg_send, sel, sel_impl};
@@ -6,7 +6,7 @@ use serde::Serialize;
 use tauri::{
     utils::config::WindowEffectsConfig,
     window::{Effect, EffectState},
-    ActivationPolicy, AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
+    AppHandle, Manager, WebviewUrl, WebviewWindow, WebviewWindowBuilder,
 };
 use tokio::fs;
 
@@ -81,9 +81,7 @@ pub fn create_workspace_window(app_handle: AppHandle) -> Result<String, String> 
         .build()
         .map_err(|e| format!("failed to create workspace window: {e}"))?;
 
-    // show dock icon when workspace window is created
-    let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
-    log::info!("created workspace window: {label}, switched to regular activation policy");
+    log::info!("created workspace window: {label}");
 
     Ok(label)
 }
@@ -112,24 +110,6 @@ pub fn show_or_create_workspace_window(app_handle: &AppHandle) {
     } else {
         // no workspace window exists, create one
         let _ = create_workspace_window(app_handle.clone());
-    }
-}
-
-/// checks if any workspace windows exist and updates activation policy accordingly
-pub fn update_activation_policy_for_workspace(app_handle: &AppHandle) {
-    let has_workspace_windows = app_handle
-        .webview_windows()
-        .keys()
-        .any(|label| label.starts_with(WORKSPACE_WINDOW_LABEL_PREFIX));
-
-    if has_workspace_windows {
-        // workspace windows exist, show in dock
-        let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
-        log::info!("workspace windows exist, using regular activation policy");
-    } else {
-        // no workspace windows, hide from dock
-        let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
-        log::info!("no workspace windows, using accessory activation policy");
     }
 }
 

@@ -1,13 +1,11 @@
 use tauri::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{Manager, RunEvent, WindowEvent};
+use tauri::{Manager, RunEvent};
 
 mod command;
 mod constants;
 mod file_watcher;
 mod nb;
 mod utils;
-
-use constants::WORKSPACE_WINDOW_LABEL_PREFIX;
 
 pub fn run() {
     tauri::Builder::default()
@@ -58,17 +56,6 @@ pub fn run() {
             RunEvent::Reopen { .. } => {
                 log::info!("app reopen event received");
                 command::show_or_create_workspace_window(app_handle);
-            }
-            RunEvent::WindowEvent {
-                label,
-                event: WindowEvent::Destroyed,
-                ..
-            } => {
-                // when a workspace window is destroyed, check if we need to hide from dock
-                if label.starts_with(WORKSPACE_WINDOW_LABEL_PREFIX) {
-                    log::info!("workspace window destroyed: {label}");
-                    command::update_activation_policy_for_workspace(app_handle);
-                }
             }
             _ => {}
         });
