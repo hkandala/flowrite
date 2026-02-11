@@ -15,8 +15,10 @@ import {
   ChevronsDownUp,
   ChevronsUpDown,
   File,
+  FilePlus,
   Folder,
   FolderOpen,
+  FolderPlus,
   Loader2,
   RefreshCw,
   Search,
@@ -25,10 +27,27 @@ import {
 import type React from "react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { toast } from "sonner";
 
 import { cn } from "@/lib/utils";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { useWorkspaceStore } from "@/store/workspace-store";
+
+import {
+  showEmptySpaceMenu,
+  showFileContextMenu,
+  showFolderContextMenu,
+  type FileTreeMenuActions,
+} from "./file-tree-context-menu";
 
 import "./file-tree-pane.css";
 
@@ -90,6 +109,7 @@ function sortEntries(a: FSEntry, b: FSEntry): number {
 
 const ROOT_ID = "root";
 const INDENT = 16;
+const TEMP_ITEM_PREFIX = "__creating__";
 
 // -----------------------------------------
 // tree item component
@@ -103,6 +123,7 @@ interface TreeItemProps {
   onFileClick?: () => void;
   onRenameComplete?: () => void;
   onRenameCancel?: () => void;
+  onContextMenu?: (e: React.MouseEvent) => void;
 }
 
 function FileTreeItemRow({
@@ -113,6 +134,7 @@ function FileTreeItemRow({
   onFileClick,
   onRenameComplete,
   onRenameCancel,
+  onContextMenu,
 }: TreeItemProps) {
   const level = item.getItemMeta().level - 1;
   const isFolder = item.isFolder();
@@ -134,6 +156,11 @@ function FileTreeItemRow({
         if (!isFolder && !isLoading && onFileClick) {
           onFileClick();
         }
+      }}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        onContextMenu?.(e);
       }}
       className={cn(
         "file-tree-item",
@@ -210,6 +237,8 @@ function FileTreeItemRow({
 
 export function FileTreePane() {
   const openFile = useWorkspaceStore((s) => s.openFile);
+  const openFileToSide = useWorkspaceStore((s) => s.openFileToSide);
+  const closeFile = useWorkspaceStore((s) => s.closeFile);
   const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
   const requestEditorTabFocus = useWorkspaceStore(
     (s) => s.requestEditorTabFocus,
@@ -222,6 +251,13 @@ export function FileTreePane() {
 
   // local ref for programmatic focus
   const treeContainerRef = useRef<HTMLDivElement | null>(null);
+
+  // track inline creation state (new file/folder via rename input)
+  const creatingItemRef = useRef<{
+    parentPath: string;
+    type: "file" | "folder";
+    tempId: string;
+  } | null>(null);
 
   // filter state
   const [filterOpen, setFilterOpen] = useState(false);
@@ -240,6 +276,13 @@ export function FileTreePane() {
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [rootLoaded, setRootLoaded] = useState(false);
 
+  // delete confirmation dialog state
+  const [pendingDelete, setPendingDelete] = useState<{
+    path: string;
+    name: string;
+    isDir: boolean;
+  } | null>(null);
+
   // recursive data for expand all & filtering
   const [allRecursiveItems, setAllRecursiveItems] = useState<FSEntry[]>([]);
   const [isLoadingRecursive, setIsLoadingRecursive] = useState(false);
@@ -257,7 +300,15 @@ export function FileTreePane() {
   const fetchChildren = useCallback(
     async (itemId: string): Promise<string[]> => {
       const cached = childrenCacheRef.current.get(itemId);
-      if (cached) return cached;
+      if (cached) {
+        // strip stale temp items from cache if no creation is active
+        if (!creatingItemRef.current && cached.some((id) => id.startsWith(TEMP_ITEM_PREFIX))) {
+          const filtered = cached.filter((id) => !id.startsWith(TEMP_ITEM_PREFIX));
+          childrenCacheRef.current.set(itemId, filtered);
+          return filtered;
+        }
+        return cached;
+      }
 
       const dirPath = itemId === ROOT_ID ? "" : itemId;
 
@@ -305,8 +356,12 @@ export function FileTreePane() {
   const tree = useTree<FileTreeItem>({
     rootItemId: ROOT_ID,
     getItemName: (item) => {
+      const itemId = item.getId();
+      // temp items always show "untitled" (even while loading)
+      if (itemId.startsWith(TEMP_ITEM_PREFIX)) return "untitled";
       const data = item.getItemData();
-      if (!data?.name) return "...";
+      if (data === null || data === undefined) return "...";
+      if (!data.name) return "";
       return getDisplayName(data.name, data.isDir);
     },
     isItemFolder: (item) => item.getItemData()?.isDir ?? false,
@@ -351,6 +406,81 @@ export function FileTreePane() {
     },
     onRename: async (item, newName) => {
       const itemId = item.getId();
+
+      // --- Handle new item creation ---
+      if (itemId.startsWith(TEMP_ITEM_PREFIX)) {
+        const creating = creatingItemRef.current;
+        if (!creating) return;
+        creatingItemRef.current = null;
+
+        // Clean up temp item from caches
+        const parentId = creating.parentPath || ROOT_ID;
+        const existingChildren = childrenCacheRef.current.get(parentId) || [];
+        childrenCacheRef.current.set(
+          parentId,
+          existingChildren.filter((id) => id !== itemId),
+        );
+        itemCacheRef.current.delete(itemId);
+
+        // Validate name - treat empty or unchanged "untitled" as cancellation
+        let name = newName.trim();
+        if (!name || name === "untitled") {
+          try {
+            tree.getItemInstance(parentId).updateCachedChildrenIds(
+              existingChildren.filter((id) => id !== itemId),
+            );
+          } catch {
+            /* parent may not be loaded */
+          }
+          return;
+        }
+
+        // Auto-add .md for files, strip if user typed it
+        if (creating.type === "file") {
+          if (name.endsWith(".md")) name = name.slice(0, -3);
+          name = `${name}.md`;
+        }
+
+        const newPath = creating.parentPath
+          ? `${creating.parentPath}/${name}`
+          : name;
+
+        // Check for duplicates
+        const siblings = childrenCacheRef.current.get(parentId) || [];
+        const duplicate = siblings.some((id) => {
+          const siblingItem = itemCacheRef.current.get(id);
+          return siblingItem?.name.toLowerCase() === name.toLowerCase();
+        });
+        if (duplicate) {
+          toast.error(`"${name}" already exists`);
+          tree.getItemInstance(parentId).invalidateChildrenIds();
+          return;
+        }
+
+        // Create the file/folder
+        try {
+          if (creating.type === "folder") {
+            await invoke("create_dir", { path: newPath });
+          } else {
+            await invoke("create_file", { path: newPath });
+          }
+
+          // Refresh parent cache to pick up the new real item
+          childrenCacheRef.current.delete(parentId);
+          tree.getItemInstance(parentId).invalidateChildrenIds();
+
+          // Open file in editor (only for files)
+          if (creating.type === "file") {
+            openFile(newPath);
+          }
+        } catch (e) {
+          toast.error(`failed to create: ${e}`);
+          tree.getItemInstance(parentId).invalidateChildrenIds();
+        }
+        return;
+      }
+
+      // --- Normal rename logic ---
       const oldData = itemCacheRef.current.get(itemId);
       if (!oldData) return;
 
@@ -384,7 +514,7 @@ export function FileTreePane() {
           /* parent may not be loaded */
         }
       } catch (e) {
-        console.error("Rename failed:", e);
+        toast.error(`rename failed: ${e}`);
         itemCacheRef.current.set(itemId, oldData);
       }
     },
@@ -439,6 +569,28 @@ export function FileTreePane() {
       }
     },
   });
+
+  // clean up temp items when renaming ends (catches Esc, blur, all abort paths)
+  // this handles the race condition where async data loader overwrites our manual cleanup
+  useEffect(() => {
+    if (state.renamingItem) return; // still renaming, nothing to clean up
+
+    const creating = creatingItemRef.current;
+    if (!creating) return; // no active creation
+
+    // renaming ended while a creation was active — clean up the temp item
+    creatingItemRef.current = null;
+    const parentId = creating.parentPath || ROOT_ID;
+    const children = childrenCacheRef.current.get(parentId) || [];
+    const filtered = children.filter((id) => id !== creating.tempId);
+    childrenCacheRef.current.set(parentId, filtered);
+    itemCacheRef.current.delete(creating.tempId);
+    try {
+      tree.getItemInstance(parentId).updateCachedChildrenIds(filtered);
+    } catch {
+      /* parent may not be loaded */
+    }
+  }, [state.renamingItem, tree]);
 
   // ---- items & filter matching ----
 
@@ -664,6 +816,9 @@ export function FileTreePane() {
   }, [tree]);
 
   const handleRefresh = useCallback(() => {
+    // cancel any active inline creation
+    creatingItemRef.current = null;
+
     childrenCacheRef.current.clear();
     const rootItem = itemCacheRef.current.get(ROOT_ID);
     itemCacheRef.current.clear();
@@ -688,6 +843,142 @@ export function FileTreePane() {
 
     setTimeout(() => setIsRefreshing(false), 600);
   }, [tree]);
+
+  // ---- inline creation handlers ----
+
+  const handleNewItem = useCallback(
+    async (parentPath: string, type: "file" | "folder") => {
+      const tempId = `${TEMP_ITEM_PREFIX}${Date.now()}`;
+      creatingItemRef.current = { parentPath, type, tempId };
+
+      // add temp item to our own caches
+      itemCacheRef.current.set(tempId, {
+        id: tempId,
+        name: "untitled",
+        isDir: type === "folder",
+      });
+      const parentId = parentPath || ROOT_ID;
+
+      // ensure parent children are loaded
+      if (!childrenCacheRef.current.has(parentId)) {
+        await fetchChildren(parentId);
+      }
+
+      // add temp item to children cache BEFORE expanding
+      // this ensures the data loader returns children with the temp item
+      const existingChildren = childrenCacheRef.current.get(parentId) || [];
+      const newChildren = [...existingChildren, tempId];
+      childrenCacheRef.current.set(parentId, newChildren);
+
+      // expand parent folder
+      try {
+        const parentInstance = tree.getItemInstance(parentId);
+        if (!parentInstance.isExpanded()) {
+          parentInstance.expand();
+        }
+        // update the tree's cached children to include temp item
+        parentInstance.updateCachedChildrenIds(newChildren);
+      } catch {
+        // fallback: expand via setState
+        setState((prev) => ({
+          ...prev,
+          expandedItems: [
+            ...new Set([...(prev.expandedItems ?? []), parentId]),
+          ],
+        }));
+      }
+
+      // after re-render, start renaming the temp item
+      requestAnimationFrame(() => {
+        try {
+          tree.getItemInstance(tempId).startRenaming();
+        } catch {
+          /* item may not be ready */
+        }
+      });
+    },
+    [tree, fetchChildren],
+  );
+
+  const handleNewFile = useCallback(
+    (parentPath: string) => handleNewItem(parentPath, "file"),
+    [handleNewItem],
+  );
+
+  const handleNewFolder = useCallback(
+    (parentPath: string) => handleNewItem(parentPath, "folder"),
+    [handleNewItem],
+  );
+
+  // ---- delete handler ----
+
+  const handleDeleteItem = useCallback(
+    (itemPath: string, isDir: boolean) => {
+      const name = itemPath.split("/").pop() || itemPath;
+      setPendingDelete({ path: itemPath, name, isDir });
+    },
+    [],
+  );
+
+  const confirmDelete = useCallback(async () => {
+    if (!pendingDelete) return;
+    const { path: itemPath, isDir } = pendingDelete;
+    setPendingDelete(null);
+
+    try {
+      await invoke(isDir ? "delete_dir" : "delete_file", { path: itemPath });
+
+      // close editor tab if the deleted file is open
+      if (!isDir) {
+        closeFile(itemPath);
+      }
+
+      const parentPath = itemPath.includes("/")
+        ? itemPath.substring(0, itemPath.lastIndexOf("/"))
+        : "";
+      const parentId = parentPath || ROOT_ID;
+      childrenCacheRef.current.delete(parentId);
+      itemCacheRef.current.delete(itemPath);
+      tree.getItemInstance(parentId).invalidateChildrenIds();
+    } catch (e) {
+      toast.error(`delete failed: ${e}`);
+    }
+  }, [pendingDelete, tree, closeFile]);
+
+  // ---- context menu actions ----
+
+  const contextMenuActions: FileTreeMenuActions = useMemo(
+    () => ({
+      onNewFile: handleNewFile,
+      onNewFolder: handleNewFolder,
+      onOpen: openFile,
+      onOpenToSide: openFileToSide,
+      onRename: (path) => {
+        try {
+          tree.getItemInstance(path).startRenaming();
+        } catch {
+          /* item may not be loaded */
+        }
+      },
+      onDelete: handleDeleteItem,
+      onExpandCollapse: (path, isExpanded) => {
+        try {
+          const item = tree.getItemInstance(path);
+          isExpanded ? item.collapse() : item.expand();
+        } catch {
+          /* item may not be loaded */
+        }
+      },
+    }),
+    [
+      handleNewFile,
+      handleNewFolder,
+      openFile,
+      openFileToSide,
+      handleDeleteItem,
+      tree,
+    ],
+  );
 
   const handleKeyDown = useCallback(
     (
@@ -782,6 +1073,24 @@ export function FileTreePane() {
       <div className="file-tree-header">
         <span className="file-tree-title">flowrite</span>
         <div className="file-tree-actions">
+          <button
+            type="button"
+            className="file-tree-btn"
+            onClick={() => handleNewFile("")}
+            aria-label="New file"
+            title="new file"
+          >
+            <FilePlus className="h-3 w-3" />
+          </button>
+          <button
+            type="button"
+            className="file-tree-btn"
+            onClick={() => handleNewFolder("")}
+            aria-label="New folder"
+            title="new folder"
+          >
+            <FolderPlus className="h-3 w-3" />
+          </button>
           <button
             type="button"
             className="file-tree-btn"
@@ -887,6 +1196,13 @@ export function FileTreePane() {
             }
           }}
           onKeyDown={(e) => handleKeyDown(e, containerProps.onKeyDown)}
+          onContextMenu={(e) => {
+            // Only show empty space menu if click isn't on a tree item
+            if (!(e.target as HTMLElement).closest(".file-tree-item")) {
+              e.preventDefault();
+              showEmptySpaceMenu(contextMenuActions);
+            }
+          }}
           className={cn(
             "file-tree-container",
             keyboardFocused && "keyboard-focused",
@@ -918,7 +1234,23 @@ export function FileTreePane() {
                   activeFilePath={activeFilePath}
                   onFileClick={requestEditorTabFocus}
                   onRenameComplete={() => tree.completeRenaming()}
-                  onRenameCancel={() => tree.abortRenaming()}
+                  onRenameCancel={() => {
+                    tree.abortRenaming();
+                  }}
+                  onContextMenu={() => {
+                    const itemId = item.getId();
+                    const itemData = itemCacheRef.current.get(itemId);
+                    if (!itemData) return;
+                    if (itemData.isDir) {
+                      showFolderContextMenu(
+                        itemId,
+                        item.isExpanded(),
+                        contextMenuActions,
+                      );
+                    } else {
+                      showFileContextMenu(itemId, contextMenuActions);
+                    }
+                  }}
                 />
               );
             })
@@ -931,6 +1263,34 @@ export function FileTreePane() {
           />
         </div>
       </ScrollArea>
+
+      {/* delete confirmation dialog */}
+      <Dialog
+        open={!!pendingDelete}
+        onOpenChange={(open) => {
+          if (!open) setPendingDelete(null);
+        }}
+      >
+        <DialogContent showCloseButton={false}>
+          <DialogHeader>
+            <DialogTitle>
+              delete {pendingDelete?.isDir ? "folder" : "file"}
+            </DialogTitle>
+            <DialogDescription>
+              are you sure you want to delete &quot;{pendingDelete?.name}&quot;?
+              this action cannot be undone.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingDelete(null)}>
+              cancel
+            </Button>
+            <Button variant="destructive" onClick={confirmDelete}>
+              delete
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }

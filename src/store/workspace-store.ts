@@ -22,6 +22,8 @@ interface WorkspaceActions {
   setDockviewApi: (api: DockviewApi) => void;
   addEditorTab: (targetGroupId?: string) => void;
   openFile: (filePath: string) => void;
+  openFileToSide: (filePath: string) => void;
+  closeFile: (filePath: string) => void;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
   setLeftPanelWidth: (width: number) => void;
@@ -118,6 +120,50 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       component: "editor",
       title: displayName,
       params: { title: displayName, filePath },
+    });
+  },
+
+  closeFile: (filePath) => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    for (const panel of dockviewApi.panels) {
+      if ((panel.params as Record<string, unknown>)?.filePath === filePath) {
+        panel.api.close();
+        return;
+      }
+    }
+  },
+
+  openFileToSide: (filePath) => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    // if the file is already open, activate that tab
+    for (const panel of dockviewApi.panels) {
+      if ((panel.params as Record<string, unknown>)?.filePath === filePath) {
+        panel.api.setActive();
+        return;
+      }
+    }
+
+    // derive display name: strip path and .md extension
+    const fileName = filePath.split("/").pop() || filePath;
+    const displayName = fileName.endsWith(".md")
+      ? fileName.slice(0, -3)
+      : fileName;
+    const id = `file-${Date.now()}`;
+
+    const activePanel = dockviewApi.activePanel;
+
+    dockviewApi.addPanel({
+      id,
+      component: "editor",
+      title: displayName,
+      params: { title: displayName, filePath },
+      position: activePanel
+        ? { referencePanel: activePanel.id, direction: "right" }
+        : undefined,
     });
   },
 }));

@@ -5,6 +5,7 @@ import { useHashLocation } from "wouter/use-hash-location";
 import { listen } from "@tauri-apps/api/event";
 
 import { ThemeProvider } from "@/components/ui/theme-provider";
+import { Toaster } from "@/components/ui/sonner";
 import Workspace from "@/components/workspace/workspace";
 
 import {
@@ -44,6 +45,7 @@ export function App() {
           </Route>
         </Switch>
       </Router>
+      <Toaster />
     </ThemeProvider>
   );
 }
