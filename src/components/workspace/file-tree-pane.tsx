@@ -40,7 +40,7 @@ import {
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { useWorkspaceStore } from "@/store/workspace-store";
+import { useWorkspaceStore, focusActiveEditor } from "@/store/workspace-store";
 
 import {
   showEmptySpaceMenu,
@@ -242,9 +242,6 @@ export function FileTreePane() {
   const closeFile = useWorkspaceStore((s) => s.closeFile);
   const renameFile = useWorkspaceStore((s) => s.renameFile);
   const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
-  const requestEditorTabFocus = useWorkspaceStore(
-    (s) => s.requestEditorTabFocus,
-  );
 
   // item metadata cache (name, isDir) — used by fetchItem, context menus, filter
   // headless-tree manages its own children cache internally; we don't duplicate it
@@ -1203,7 +1200,7 @@ export function FileTreePane() {
                   isDimmed={isDimmed}
                   isHighlighted={isFiltering && isMatch}
                   activeFilePath={activeFilePath}
-                  onFileClick={requestEditorTabFocus}
+                  onFileClick={focusActiveEditor}
                   onRenameComplete={() => tree.completeRenaming()}
                   onRenameCancel={() => {
                     tree.abortRenaming();

@@ -53,6 +53,7 @@ export function EditorTab(props: EditorTabProps) {
   const isDirty = useWorkspaceStore((s) => s.dirtyPanels.has(api.id));
   const closeTab = useWorkspaceStore((s) => s.closeTab);
   const closeOtherTabs = useWorkspaceStore((s) => s.closeOtherTabs);
+  const closeTabsToRight = useWorkspaceStore((s) => s.closeTabsToRight);
   const closeAllTabs = useWorkspaceStore((s) => s.closeAllTabs);
   const closeSavedTabs = useWorkspaceStore((s) => s.closeSavedTabs);
 
@@ -105,11 +106,19 @@ export function EditorTab(props: EditorTabProps) {
       showTabContextMenu(api.id, {
         onClose: (panelId) => closeTab(panelId),
         onCloseOthers: (panelId) => closeOtherTabs(panelId),
+        onCloseToRight: (panelId) => closeTabsToRight(panelId),
         onCloseAll: () => closeAllTabs(),
         onCloseSaved: () => closeSavedTabs(),
       });
     },
-    [api.id, closeTab, closeOtherTabs, closeAllTabs, closeSavedTabs],
+    [
+      api.id,
+      closeTab,
+      closeOtherTabs,
+      closeTabsToRight,
+      closeAllTabs,
+      closeSavedTabs,
+    ],
   );
 
   const onBtnPointerDown = useCallback((event: React.PointerEvent) => {
@@ -138,8 +147,8 @@ export function EditorTab(props: EditorTabProps) {
           onClick={handleClose}
         >
           <svg
-            width="9"
-            height="9"
+            width="7"
+            height="7"
             viewBox="0 0 9 9"
             fill="none"
             xmlns="http://www.w3.org/2000/svg"

@@ -1,11 +1,24 @@
 import { useEffect } from "react";
-import { listen } from "@tauri-apps/api/event";
+import { emit, listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { useHotkeys } from "react-hotkeys-hook";
 
 import { ThemeProvider } from "@/components/ui/theme-provider";
 import { WorkspaceLayout } from "@/components/workspace/workspace-layout";
-import { useWorkspaceStore } from "@/store/workspace-store";
-import { isInternalPath, getBaseDir } from "@/lib/utils";
+import {
+  useWorkspaceStore,
+  focusActiveEditor,
+  toggleActiveEditorMaximize,
+  toggleActiveEditorFullWidth,
+} from "@/store/workspace-store";
+import { openFileFromAbsolutePath } from "@/lib/utils";
+
+const HOTKEY_OPTIONS = {
+  enableOnContentEditable: true,
+  enableOnFormTags: true as const,
+  preventDefault: true,
+};
 
 function Workspace() {
   const addEditorTab = useWorkspaceStore((s) => s.addEditorTab);
@@ -19,6 +32,9 @@ function Workspace() {
   const requestSaveConfirmation = useWorkspaceStore(
     (s) => s.requestSaveConfirmation,
   );
+  const requestQuitConfirmation = useWorkspaceStore(
+    (s) => s.requestQuitConfirmation,
+  );
 
   // focus the webview on mount so keyboard shortcuts work immediately
   // in new windows without requiring a click first
@@ -29,63 +45,139 @@ function Workspace() {
     document.body.focus();
   }, []);
 
-  // keyboard shortcuts — handled here (not as native menu accelerators)
-  // so we can properly ignore key-repeat via e.repeat
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (!e.metaKey || e.repeat) return;
+  // --- keyboard shortcuts ---
 
-      if (!e.shiftKey) {
-        switch (e.key) {
-          case "n":
-            e.preventDefault();
-            addEditorTab();
-            // double setTimeout(0) lets React render the new pane, then focus
-            setTimeout(() => {
-              setTimeout(
-                () => useWorkspaceStore.getState().requestEditorTabFocus(),
-                0,
-              );
-            }, 0);
-            return;
-          case "s":
-            e.preventDefault();
-            requestSave();
-            return;
-          case "o":
-            e.preventDefault();
-            handleOpenFile();
-            return;
-          case "w":
-            e.preventDefault();
-            {
-              const api = useWorkspaceStore.getState().dockviewApi;
-              if (api?.activePanel) {
-                closeTab(api.activePanel.id);
-                // focus the next active editor after the tab closes
-                setTimeout(() => {
-                  setTimeout(
-                    () => useWorkspaceStore.getState().requestEditorTabFocus(),
-                    0,
-                  );
-                }, 0);
-              }
-            }
-            return;
+  // Ctrl+Tab / Ctrl+Shift+Tab — cycle tabs within the active group
+  useHotkeys(
+    ["ctrl+tab", "ctrl+shift+tab"],
+    (e) => {
+      const api = useWorkspaceStore.getState().dockviewApi;
+      if (!api?.activePanel) return;
+
+      const group = api.activePanel.group;
+      const panels = group.panels;
+      const currentIdx = panels.findIndex((p) => p.id === api.activePanel!.id);
+      if (currentIdx === -1) return;
+
+      const nextIdx = e.shiftKey
+        ? (currentIdx - 1 + panels.length) % panels.length
+        : (currentIdx + 1) % panels.length;
+
+      panels[nextIdx].api.setActive();
+      focusActiveEditor();
+    },
+    HOTKEY_OPTIONS,
+  );
+
+  // Cmd+1-9 — focus the Nth editor group (sorted by visual position)
+  useHotkeys(
+    Array.from({ length: 9 }, (_, i) => `mod+${i + 1}`),
+    (e) => {
+      if (e.repeat) return;
+      const groupIndex = Number(e.key) - 1;
+      const api = useWorkspaceStore.getState().dockviewApi;
+      if (!api) return;
+
+      const groups = [...api.groups].sort((a, b) => {
+        const rectA = a.element.getBoundingClientRect();
+        const rectB = b.element.getBoundingClientRect();
+        if (Math.abs(rectA.top - rectB.top) > 5) {
+          return rectA.top - rectB.top;
         }
-      } else {
-        switch (e.key) {
-          case "s":
-            e.preventDefault();
-            requestSaveAll();
-            return;
+        return rectA.left - rectB.left;
+      });
+
+      if (groupIndex < groups.length) {
+        const group = groups[groupIndex];
+        const target = group.activePanel ?? group.panels[0];
+        if (target) {
+          target.api.setActive();
+          focusActiveEditor();
         }
       }
-    };
+    },
+    HOTKEY_OPTIONS,
+  );
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [addEditorTab, requestSave, requestSaveAll, handleOpenFile, closeTab]);
+  // Cmd+N — new tab
+  useHotkeys(
+    "mod+n",
+    (e) => {
+      if (e.repeat) return;
+      addEditorTab();
+      focusActiveEditor();
+    },
+    HOTKEY_OPTIONS,
+    [addEditorTab],
+  );
+
+  // Cmd+S — save
+  useHotkeys(
+    "mod+s",
+    (e) => {
+      if (e.repeat) return;
+      requestSave();
+    },
+    HOTKEY_OPTIONS,
+    [requestSave],
+  );
+
+  // Cmd+O — open file
+  useHotkeys(
+    "mod+o",
+    (e) => {
+      if (e.repeat) return;
+      handleOpenFile();
+    },
+    HOTKEY_OPTIONS,
+    [handleOpenFile],
+  );
+
+  // Cmd+W — close active tab
+  useHotkeys(
+    "mod+w",
+    (e) => {
+      if (e.repeat) return;
+      const api = useWorkspaceStore.getState().dockviewApi;
+      if (api?.activePanel) {
+        closeTab(api.activePanel.id);
+        focusActiveEditor();
+      }
+    },
+    HOTKEY_OPTIONS,
+    [closeTab],
+  );
+
+  // Cmd+Shift+S — save all
+  useHotkeys(
+    "mod+shift+s",
+    (e) => {
+      if (e.repeat) return;
+      requestSaveAll();
+    },
+    HOTKEY_OPTIONS,
+    [requestSaveAll],
+  );
+
+  // Cmd+Shift++ — toggle maximize / zen mode
+  useHotkeys(
+    "mod+shift+equal",
+    (e) => {
+      if (e.repeat) return;
+      toggleActiveEditorMaximize();
+    },
+    HOTKEY_OPTIONS,
+  );
+
+  // Cmd+Shift+- — toggle full width
+  useHotkeys(
+    "mod+shift+minus",
+    (e) => {
+      if (e.repeat) return;
+      toggleActiveEditorFullWidth();
+    },
+    HOTKEY_OPTIONS,
+  );
 
   // listen for menu click events from Tauri backend
   // (these fire when the user clicks a menu item with the mouse)
@@ -108,12 +200,7 @@ function Workspace() {
       unlisten.push(
         await listen("menu-new-file", () => {
           addEditorTab();
-          setTimeout(() => {
-            setTimeout(
-              () => useWorkspaceStore.getState().requestEditorTabFocus(),
-              0,
-            );
-          }, 0);
+          focusActiveEditor();
         }),
       );
 
@@ -130,36 +217,32 @@ function Workspace() {
           const activePanel = api.activePanel;
           if (activePanel) {
             closeTab(activePanel.id);
-            setTimeout(() => {
-              setTimeout(
-                () => useWorkspaceStore.getState().requestEditorTabFocus(),
-                0,
-              );
-            }, 0);
+            focusActiveEditor();
           }
         }),
       );
 
-      // handle file opened from OS (file association / drag-drop to dock)
+      // handle file opened from OS (file association / drag-drop to dock).
+      // uses window-specific listener so only the targeted window opens the file.
+      const currentWindow = getCurrentWindow();
       unlisten.push(
-        await listen<string>("open-file-from-os", async (event) => {
-          const absolutePath = event.payload;
-          const internal = await isInternalPath(absolutePath);
-
-          if (internal) {
-            const baseDir = await getBaseDir();
-            let relativePath = absolutePath;
-            if (absolutePath.startsWith(baseDir)) {
-              relativePath = absolutePath.slice(baseDir.length);
-              if (relativePath.startsWith("/")) {
-                relativePath = relativePath.slice(1);
-              }
+        await currentWindow.listen<string>(
+          "open-file-from-os",
+          async (event) => {
+            await openFileFromAbsolutePath(
+              event.payload,
+              openFile,
+              openExternalFile,
+            );
+            // backend always buffers AND emits — drain the buffer to prevent
+            // stale entries from reopening on future window mounts
+            try {
+              await invoke<string[]>("take_pending_files");
+            } catch {
+              /* ignore */
             }
-            openFile(relativePath);
-          } else {
-            openExternalFile(absolutePath);
-          }
-        }),
+          },
+        ),
       );
     };
 
@@ -212,6 +295,26 @@ function Workspace() {
       unlisten?.();
     };
   }, [hasDirtyPanels, requestSaveConfirmation, requestSaveAll]);
+
+  // handle app quit with save confirmation
+  useEffect(() => {
+    const unlisten = listen("request-quit", async () => {
+      const result = await requestQuitConfirmation();
+
+      if (result === "cancel") return;
+
+      if (result === "save") {
+        await requestSaveAll();
+      }
+
+      // tell Rust it's safe to quit
+      await emit("confirm-quit");
+    });
+
+    return () => {
+      unlisten.then((fn) => fn());
+    };
+  }, [requestQuitConfirmation, requestSaveAll]);
 
   return (
     <ThemeProvider>

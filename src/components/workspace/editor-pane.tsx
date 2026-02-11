@@ -101,11 +101,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   );
   const markDirty = useWorkspaceStore((s) => s.markDirty);
   const markClean = useWorkspaceStore((s) => s.markClean);
-  const editorTabFocusRequest = useWorkspaceStore(
-    (s) => s.editorTabFocusRequest,
-  );
-  // initialize to current value so the effect only fires for future requests
-  const lastHandledEditorFocusRequestRef = useRef(editorTabFocusRequest);
 
   // --- save callbacks ---
 
@@ -227,15 +222,49 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     markClean(props.api.id);
   }, [editor, props.api, props.params.title, markClean]);
 
-  // --- register save callbacks ---
+  // --- register editor callbacks ---
+
+  const [, forceRender] = useState(0);
+
+  const focusEditor = useCallback(() => {
+    if (!editor) return;
+    editor.tf.focus();
+    // Force a React re-render so Plate syncs the DOM selection
+    // and the browser renders the caret.
+    forceRender((n) => n + 1);
+  }, [editor]);
+
+  const toggleFullWidth = useCallback(() => {
+    setIsFullWidth((prev) => !prev);
+  }, []);
+
+  const toggleMaximize = useCallback(() => {
+    if (editorMaximized) {
+      invoke("set_traffic_lights_visible", { visible: true });
+    } else {
+      props.api.maximize();
+      invoke("set_traffic_lights_visible", { visible: false });
+    }
+    toggleEditorMaximized();
+  }, [editorMaximized, props.api, toggleEditorMaximized]);
 
   useEffect(() => {
     registerEditor(props.api.id, {
       save: performSave,
       saveAs: performSaveAs,
+      focus: focusEditor,
+      toggleMaximize,
+      toggleFullWidth,
     });
     return () => unregisterEditor(props.api.id);
-  }, [props.api.id, performSave, performSaveAs]);
+  }, [
+    props.api.id,
+    performSave,
+    performSaveAs,
+    focusEditor,
+    toggleMaximize,
+    toggleFullWidth,
+  ]);
 
   // load file content and create editor
   useEffect(() => {
@@ -369,15 +398,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     };
   }, []);
 
-  const handleToggleMaximize = () => {
-    if (editorMaximized) {
-      invoke("set_traffic_lights_visible", { visible: true });
-    } else {
-      props.api.maximize();
-      invoke("set_traffic_lights_visible", { visible: false });
-    }
-    toggleEditorMaximized();
-  };
+  const handleToggleMaximize = toggleMaximize;
 
   // prevent interactive elements inside the editor (checkboxes, etc.) from
   // being reachable via Tab — they should only be clickable with mouse
@@ -407,21 +428,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       cancelAnimationFrame(rafId);
     };
   }, [editor]);
-
-  // focus editor when tab-bar interaction requests it
-  useEffect(() => {
-    if (!editor) return;
-    if (editorTabFocusRequest === lastHandledEditorFocusRequestRef.current) {
-      return;
-    }
-    lastHandledEditorFocusRequestRef.current = editorTabFocusRequest;
-
-    requestAnimationFrame(() => {
-      if (props.api.isActive) {
-        editor.tf.focus();
-      }
-    });
-  }, [editor, editorTabFocusRequest, props.api]);
 
   // loading state
   if (isLoading || !editor) {

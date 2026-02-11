@@ -1,5 +1,24 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Mutex,
+};
+
 use tauri::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{Emitter, Manager, RunEvent};
+use tauri::{Emitter, Listener, Manager, RunEvent};
+
+/// Flag to break the quit → ExitRequested → emit loop.
+/// Set to `true` once the frontend confirms quit, so the second
+/// ExitRequested (triggered by `app.exit(0)`) is allowed through.
+static QUIT_CONFIRMED: AtomicBool = AtomicBool::new(false);
+
+/// Tracks whether the initial workspace window has been created.
+/// Prevents duplicate windows when the app is launched via file association,
+/// where both RunEvent::Opened and RunEvent::MainEventsCleared could race.
+static INITIAL_WINDOW_CREATED: AtomicBool = AtomicBool::new(false);
+
+/// Stores file paths received via macOS file association open events
+/// before the frontend is ready to handle them (cold launch).
+pub(crate) struct PendingFiles(pub Mutex<Vec<String>>);
 
 mod command;
 mod constants;
@@ -18,10 +37,12 @@ pub fn run() {
                 .level_for("notify", log::LevelFilter::Warn)
                 .build(),
         )
+        .manage(PendingFiles(Mutex::new(Vec::new())))
         .setup(setup_app)
         .invoke_handler(tauri::generate_handler![
             command::set_traffic_lights_visible,
             command::create_workspace_window,
+            command::take_pending_files,
             command::create_dir,
             command::list_dir,
             command::delete_dir,
@@ -40,15 +61,21 @@ pub fn run() {
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| match event {
-            RunEvent::ExitRequested { .. } => {
-                log::info!("exit requested, quitting");
+            RunEvent::ExitRequested { api, .. } => {
+                if QUIT_CONFIRMED.load(Ordering::SeqCst) {
+                    log::info!("quit confirmed, allowing exit");
+                } else {
+                    api.prevent_exit();
+                    log::info!("exit requested, asking frontend for confirmation");
+                    let _ = app_handle.emit("request-quit", ());
+                }
             }
             RunEvent::MenuEvent(menu_event) => {
                 let menu_id = menu_event.id();
 
                 if menu_id == &MenuId::new(QUIT_MENU_ID) {
-                    log::info!("quit menu clicked, exiting");
-                    app_handle.exit(0);
+                    log::info!("quit menu clicked, requesting confirmation from frontend");
+                    let _ = app_handle.emit("request-quit", ());
                 } else if menu_id == &MenuId::new(NEW_WINDOW_MENU_ID) {
                     log::info!("new window menu clicked");
                     let _ = command::create_workspace_window(app_handle.clone());
@@ -66,22 +93,55 @@ pub fn run() {
             }
             RunEvent::Reopen { .. } => {
                 log::info!("app reopen event received");
+                INITIAL_WINDOW_CREATED.store(true, Ordering::SeqCst);
                 command::show_or_create_workspace_window(app_handle);
             }
             RunEvent::Opened { urls } => {
                 log::info!("app opened with {} URL(s)", urls.len());
+
+                // mark that we received an open event (prevents default window in MainEventsCleared)
+                INITIAL_WINDOW_CREATED.store(true, Ordering::SeqCst);
+
+                // ensure a workspace window exists
                 command::show_or_create_workspace_window(app_handle);
 
-                // convert file:// URLs to paths and emit to frontend
+                // collect file paths from URLs
+                let mut paths = Vec::new();
                 for url in urls {
                     if let Ok(path) = url.to_file_path() {
                         if let Some(path_str) = path.to_str() {
                             log::info!("opening file from OS: {}", path_str);
-                            if let Some(window) = app_handle.get_focused_window() {
-                                let _ = window.emit("open-file-from-os", path_str.to_string());
-                            }
+                            paths.push(path_str.to_string());
                         }
                     }
+                }
+
+                // always buffer for frontend pickup on mount (cold launch safety net —
+                // the event below may fire before the frontend listener is registered)
+                if let Some(state) = app_handle.try_state::<PendingFiles>() {
+                    log::info!("buffering {} file(s) for frontend pickup", paths.len());
+                    state.0.lock().unwrap().extend(paths.clone());
+                }
+
+                // also try emitting directly to the focused window for immediate
+                // handling when the frontend is already loaded (warm case).
+                // uses emit_to so only the targeted window opens the file.
+                if let Some(window) = app_handle.get_focused_window() {
+                    let target = window.label().to_string();
+                    for path in &paths {
+                        let _ = app_handle.emit_to(&target, "open-file-from-os", path.clone());
+                    }
+                }
+            }
+            RunEvent::MainEventsCleared => {
+                // on the first event loop iteration, create a default workspace window
+                // if no Opened/Reopen event has already created one (normal app launch)
+                if INITIAL_WINDOW_CREATED
+                    .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                    .is_ok()
+                {
+                    command::show_or_create_workspace_window(app_handle);
+                    log::info!("opened workspace window on start");
                 }
             }
             _ => {}
@@ -111,9 +171,18 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // initialize file watcher
     file_watcher::init_file_watcher(app.handle().clone());
 
-    // create initial workspace window
-    let _ = command::create_workspace_window(app.handle().clone());
-    log::info!("opened workspace window on start");
+    // listen for quit confirmation from frontend
+    let quit_handle = app.handle().clone();
+    app.listen("confirm-quit", move |_event| {
+        log::info!("quit confirmed by frontend, exiting");
+        QUIT_CONFIRMED.store(true, Ordering::SeqCst);
+        quit_handle.exit(0);
+    });
+
+    // NOTE: Window creation is deferred to the run event loop (MainEventsCleared)
+    // to avoid duplicate windows when the app is launched via file association.
+    // On file association launch, macOS may fire both Opened and Reopen events,
+    // which would race with a window created here.
 
     Ok(())
 }
@@ -214,6 +283,8 @@ fn setup_app_menu(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
             &PredefinedMenuItem::cut(handle, None)?,
             &PredefinedMenuItem::copy(handle, None)?,
             &PredefinedMenuItem::paste(handle, None)?,
+            &PredefinedMenuItem::separator(handle)?,
+            &PredefinedMenuItem::select_all(handle, None)?,
         ],
     )?;
 

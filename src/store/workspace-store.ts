@@ -12,18 +12,17 @@ export const RIGHT_PANEL_MAX_WIDTH = 800;
 
 // --- editor registry (module-level to avoid re-renders) ---
 
-const editorRegistry = new Map<
-  string,
-  {
-    save: () => Promise<void>;
-    saveAs: () => Promise<void>;
-  }
->();
+interface EditorCallbacks {
+  save: () => Promise<void>;
+  saveAs: () => Promise<void>;
+  focus: () => void;
+  toggleMaximize: () => void;
+  toggleFullWidth: () => void;
+}
 
-export function registerEditor(
-  panelId: string,
-  callbacks: { save: () => Promise<void>; saveAs: () => Promise<void> },
-) {
+const editorRegistry = new Map<string, EditorCallbacks>();
+
+export function registerEditor(panelId: string, callbacks: EditorCallbacks) {
   editorRegistry.set(panelId, callbacks);
 }
 
@@ -39,6 +38,13 @@ export interface SaveConfirmation {
   resolve: (result: "save" | "discard" | "cancel") => void;
 }
 
+// --- quit confirmation ---
+
+export interface QuitConfirmation {
+  hasDirty: boolean;
+  resolve: (result: "save" | "discard" | "cancel") => void;
+}
+
 // --- store ---
 
 interface WorkspaceState {
@@ -49,9 +55,9 @@ interface WorkspaceState {
   rightPanelWidth: number;
   editorMaximized: boolean;
   activeFilePath: string | null;
-  editorTabFocusRequest: number;
   dirtyPanels: Set<string>;
   saveConfirmation: SaveConfirmation | null;
+  quitConfirmation: QuitConfirmation | null;
 }
 
 interface WorkspaceActions {
@@ -69,7 +75,6 @@ interface WorkspaceActions {
   setRightPanelWidth: (width: number) => void;
   toggleEditorMaximized: () => void;
   setActiveFilePath: (path: string | null) => void;
-  requestEditorTabFocus: () => void;
 
   // dirty tracking
   markDirty: (panelId: string) => void;
@@ -89,9 +94,14 @@ interface WorkspaceActions {
   ) => Promise<"save" | "discard" | "cancel">;
   resolveSaveConfirmation: (result: "save" | "discard" | "cancel") => void;
 
+  // quit confirmation
+  requestQuitConfirmation: () => Promise<"save" | "discard" | "cancel">;
+  resolveQuitConfirmation: (result: "save" | "discard" | "cancel") => void;
+
   // tab management
   closeTab: (panelId: string) => Promise<void>;
   closeOtherTabs: (panelId: string) => Promise<void>;
+  closeTabsToRight: (panelId: string) => Promise<void>;
   closeAllTabs: () => Promise<void>;
   closeSavedTabs: () => void;
 }
@@ -106,9 +116,9 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   rightPanelWidth: 300,
   editorMaximized: false,
   activeFilePath: null,
-  editorTabFocusRequest: 0,
   dirtyPanels: new Set<string>(),
   saveConfirmation: null,
+  quitConfirmation: null,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -138,11 +148,6 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     set((state) => ({ editorMaximized: !state.editorMaximized })),
 
   setActiveFilePath: (path) => set({ activeFilePath: path }),
-
-  requestEditorTabFocus: () =>
-    set((state) => ({
-      editorTabFocusRequest: state.editorTabFocusRequest + 1,
-    })),
 
   // --- dirty tracking ---
 
@@ -215,6 +220,23 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     if (saveConfirmation) {
       saveConfirmation.resolve(result);
       set({ saveConfirmation: null });
+    }
+  },
+
+  // --- quit confirmation ---
+
+  requestQuitConfirmation: () => {
+    const hasDirty = get().hasDirtyPanels();
+    return new Promise<"save" | "discard" | "cancel">((resolve) => {
+      set({ quitConfirmation: { hasDirty, resolve } });
+    });
+  },
+
+  resolveQuitConfirmation: (result) => {
+    const { quitConfirmation } = get();
+    if (quitConfirmation) {
+      quitConfirmation.resolve(result);
+      set({ quitConfirmation: null });
     }
   },
 
@@ -448,6 +470,24 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     }
   },
 
+  closeTabsToRight: async (panelId) => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    const panel = dockviewApi.panels.find((p) => p.id === panelId);
+    if (!panel) return;
+
+    const group = panel.group;
+    const groupPanels = group.panels;
+    const idx = groupPanels.findIndex((p) => p.id === panelId);
+    if (idx === -1) return;
+
+    const panelsToRight = groupPanels.slice(idx + 1);
+    for (const p of panelsToRight) {
+      await get().closeTab(p.id);
+    }
+  },
+
   closeAllTabs: async () => {
     const { dockviewApi } = get();
     if (!dockviewApi) return;
@@ -472,6 +512,40 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     }
   },
 }));
+
+/** Focus the Plate editor in the active panel. */
+export function focusActiveEditor() {
+  // Wait for React renders and dockview layout to settle before focusing.
+  // setTimeout defers past the current synchronous work + microtasks,
+  // then requestAnimationFrame waits for the next paint (CSS/layout applied).
+  setTimeout(() => {
+    requestAnimationFrame(() => {
+      const { dockviewApi } = useWorkspaceStore.getState();
+      if (!dockviewApi?.activePanel) return;
+
+      const callbacks = editorRegistry.get(dockviewApi.activePanel.id);
+      callbacks?.focus();
+    });
+  }, 0);
+}
+
+/** Toggle maximize on the active panel's editor. */
+export function toggleActiveEditorMaximize() {
+  const { dockviewApi } = useWorkspaceStore.getState();
+  if (!dockviewApi?.activePanel) return;
+
+  const callbacks = editorRegistry.get(dockviewApi.activePanel.id);
+  callbacks?.toggleMaximize();
+}
+
+/** Toggle full width on the active panel's editor. */
+export function toggleActiveEditorFullWidth() {
+  const { dockviewApi } = useWorkspaceStore.getState();
+  if (!dockviewApi?.activePanel) return;
+
+  const callbacks = editorRegistry.get(dockviewApi.activePanel.id);
+  callbacks?.toggleFullWidth();
+}
 
 function nextUntitledNumber(dockviewApi: DockviewApi): number {
   const usedNumbers = new Set<number>();

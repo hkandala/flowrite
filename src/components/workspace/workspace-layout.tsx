@@ -5,6 +5,7 @@ import {
   useRef,
   type MouseEvent as ReactMouseEvent,
 } from "react";
+import { useHotkeys } from "react-hotkeys-hook";
 import {
   PanelLeft,
   PanelLeftDashed,
@@ -25,6 +26,8 @@ import {
 } from "dockview";
 import { invoke } from "@tauri-apps/api/core";
 
+import { openFileFromAbsolutePath } from "@/lib/utils";
+
 import "dockview/dist/styles/dockview.css";
 import "./workspace-layout.css";
 
@@ -37,6 +40,7 @@ import {
 import { Kbd } from "@/components/ui/kbd";
 import {
   useWorkspaceStore,
+  focusActiveEditor,
   LEFT_PANEL_MIN_WIDTH,
   LEFT_PANEL_MAX_WIDTH,
   RIGHT_PANEL_MIN_WIDTH,
@@ -47,6 +51,7 @@ import { AiChatPane } from "./ai-chat-pane";
 import { EditorPane } from "./editor-pane";
 import { EditorTab } from "./editor-tab";
 import { SaveConfirmationDialog } from "./save-confirmation-dialog";
+import { QuitConfirmationDialog } from "./quit-confirmation-dialog";
 import { unregisterEditor } from "@/store/workspace-store";
 
 const customTheme: DockviewTheme = {
@@ -192,7 +197,6 @@ export function WorkspaceLayout() {
     setRightPanelWidth,
     toggleEditorMaximized,
     setActiveFilePath,
-    requestEditorTabFocus,
   } = useWorkspaceStore();
 
   const dockviewRef = useRef<HTMLDivElement>(null);
@@ -200,6 +204,24 @@ export function WorkspaceLayout() {
   const onReady = useCallback(
     (event: DockviewReadyEvent) => {
       setDockviewApi(event.api);
+
+      // drain any files buffered by the backend during cold launch.
+      // this runs exactly once (not a React effect), so it's safe
+      // with StrictMode and guaranteed to run after dockviewApi is set.
+      invoke<string[]>("take_pending_files")
+        .then(async (files) => {
+          if (files.length === 0) return;
+          const { openFile, openExternalFile } =
+            useWorkspaceStore.getState();
+          for (const absolutePath of files) {
+            await openFileFromAbsolutePath(
+              absolutePath,
+              openFile,
+              openExternalFile,
+            );
+          }
+        })
+        .catch((e) => console.error("failed to drain pending files:", e));
     },
     [setDockviewApi],
   );
@@ -208,9 +230,9 @@ export function WorkspaceLayout() {
     (e: ReactMouseEvent<HTMLDivElement>) => {
       const target = e.target as HTMLElement;
       if (!target.closest(".dv-tabs-and-actions-container")) return;
-      requestEditorTabFocus();
+      focusActiveEditor();
     },
-    [requestEditorTabFocus],
+    [],
   );
 
   useLayoutEffect(() => {
@@ -270,38 +292,46 @@ export function WorkspaceLayout() {
   }, [dockviewApi, setActiveFilePath]);
 
   // keyboard shortcuts
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      // Escape → exit maximized mode
-      if (e.code === "Escape" && editorMaximized) {
-        e.preventDefault();
-        invoke("set_traffic_lights_visible", { visible: true });
-        toggleEditorMaximized();
-        return;
-      }
 
-      if (!e.metaKey || !e.shiftKey) return;
+  // Escape → exit maximized mode
+  useHotkeys(
+    "escape",
+    () => {
+      invoke("set_traffic_lights_visible", { visible: true });
+      toggleEditorMaximized();
+    },
+    {
+      enabled: editorMaximized,
+      enableOnContentEditable: true,
+      enableOnFormTags: true as const,
+      preventDefault: true,
+    },
+    [toggleEditorMaximized, editorMaximized],
+  );
 
-      if (e.code === "KeyE") {
-        // ⌘⇧E → toggle file tree
-        e.preventDefault();
-        toggleLeftPanel();
-      } else if (e.code === "KeyL") {
-        // ⌘⇧L → toggle ai chat
-        e.preventDefault();
-        toggleRightPanel();
-      }
-    };
+  // ⌘⇧E → toggle file tree
+  useHotkeys(
+    "mod+shift+e",
+    () => toggleLeftPanel(),
+    {
+      enableOnContentEditable: true,
+      enableOnFormTags: true as const,
+      preventDefault: true,
+    },
+    [toggleLeftPanel],
+  );
 
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [
-    toggleLeftPanel,
-    toggleRightPanel,
-    editorMaximized,
-    toggleEditorMaximized,
-    dockviewApi,
-  ]);
+  // ⌘⇧L → toggle ai chat
+  useHotkeys(
+    "mod+shift+l",
+    () => toggleRightPanel(),
+    {
+      enableOnContentEditable: true,
+      enableOnFormTags: true as const,
+      preventDefault: true,
+    },
+    [toggleRightPanel],
+  );
 
   return (
     <div className="h-full w-full flex flex-col relative">
@@ -439,7 +469,7 @@ export function WorkspaceLayout() {
                   button: 0,
                 }),
               );
-              requestEditorTabFocus();
+              focusActiveEditor();
             }
           }}
         >
@@ -491,6 +521,9 @@ export function WorkspaceLayout() {
 
       {/* save confirmation dialog */}
       <SaveConfirmationDialog />
+
+      {/* quit confirmation dialog */}
+      <QuitConfirmationDialog />
     </div>
   );
 }

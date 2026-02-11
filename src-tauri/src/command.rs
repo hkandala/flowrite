@@ -17,6 +17,7 @@ use crate::{
     },
     nb,
     utils::resolve_path,
+    PendingFiles,
 };
 
 #[derive(Serialize)]
@@ -111,6 +112,13 @@ pub fn show_or_create_workspace_window(app_handle: &AppHandle) {
         // no workspace window exists, create one
         let _ = create_workspace_window(app_handle.clone());
     }
+}
+
+/// drains and returns any file paths buffered from macOS file association
+/// open events that arrived before the frontend was ready
+#[tauri::command]
+pub fn take_pending_files(state: tauri::State<PendingFiles>) -> Vec<String> {
+    std::mem::take(&mut *state.0.lock().unwrap())
 }
 
 // -----------------------------------------

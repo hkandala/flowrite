@@ -172,6 +172,10 @@
   overflow: hidden !important;
 }
 
+.dockview-theme-custom .dv-active-group > .dv-content-container {
+  border-color: oklch(from var(--foreground) l c h / 0.15) !important;
+}
+
 .dark .dockview-theme-custom .dv-content-container {
   background-color: oklch(from var(--background) l c h / 0.5) !important;
 }

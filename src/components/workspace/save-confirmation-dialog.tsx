@@ -30,11 +30,10 @@ export function SaveConfirmationDialog() {
         <DialogHeader>
           <DialogTitle>save changes?</DialogTitle>
           <DialogDescription>
-            do you want to save the changes you made to{" "}
             <span className="font-medium text-foreground">
               {saveConfirmation.title}
-            </span>
-            ? your changes will be lost if you don&apos;t save them.
+            </span>{" "}
+            has unsaved changes. save before closing?
           </DialogDescription>
         </DialogHeader>
         <DialogFooter>
