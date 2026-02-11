@@ -9,11 +9,11 @@ import {
   Loader2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import matter from "gray-matter";
-import { toast } from "sonner";
 import { MarkdownPlugin } from "@platejs/markdown";
 
-import { cn } from "@/lib/utils";
+import { cn, getBaseDir, isInternalPath } from "@/lib/utils";
 import { Editor as PlateEditor, EditorContainer } from "@/components/ui/editor";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -21,7 +21,11 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { useWorkspaceStore } from "@/store/workspace-store";
+import {
+  useWorkspaceStore,
+  registerEditor,
+  unregisterEditor,
+} from "@/store/workspace-store";
 import { BasicBlocksKit } from "@/components/editor/plugins/basic-blocks-kit";
 import { BasicMarksKit } from "@/components/editor/plugins/basic-marks-kit";
 import { LinkKit } from "@/components/editor/plugins/link-kit";
@@ -39,6 +43,11 @@ import { FloatingToolbarKit } from "../editor/plugins/floating-toolbar-kit";
 
 const BUTTON_TIMEOUT = 1500;
 const SCROLL_DEBOUNCE = 300;
+
+/** Get the last element of an array (ES2020-safe alternative to .at(-1)) */
+function lastElement<T>(arr: T[]): T | undefined {
+  return arr[arr.length - 1];
+}
 
 const editorPlugins = [
   ...BasicBlocksKit,
@@ -60,16 +69,19 @@ const editorPlugins = [
 interface EditorPaneParams {
   title: string;
   filePath?: string;
+  isExternal?: boolean;
 }
 
 export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   const filePath = props.params.filePath;
+  const isExternal = props.params.isExternal ?? false;
 
   const [editor, setEditor] = useState<ReturnType<
     typeof createPlateEditor
   > | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const metadataRef = useRef<Record<string, unknown>>({});
+  const hasOriginalFrontmatterRef = useRef(false);
 
   const [isFullWidth, setIsFullWidth] = useState(false);
   const [showButtons, setShowButtons] = useState(false);
@@ -79,15 +91,151 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   const scrollingRef = useRef(false);
   const scrollTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
 
+  // dirty tracking refs
+  const savedUndoRef = useRef<unknown>(null);
+  const initialLoadCompleteRef = useRef(false);
+
   const editorMaximized = useWorkspaceStore((s) => s.editorMaximized);
   const toggleEditorMaximized = useWorkspaceStore(
     (s) => s.toggleEditorMaximized,
   );
+  const markDirty = useWorkspaceStore((s) => s.markDirty);
+  const markClean = useWorkspaceStore((s) => s.markClean);
   const editorTabFocusRequest = useWorkspaceStore(
     (s) => s.editorTabFocusRequest,
   );
   // initialize to current value so the effect only fires for future requests
   const lastHandledEditorFocusRequestRef = useRef(editorTabFocusRequest);
+
+  // --- save callbacks ---
+
+  const performSave = useCallback(async () => {
+    if (!editor) return;
+
+    const currentFilePath = props.params.filePath;
+    const currentIsExternal = props.params.isExternal ?? false;
+
+    if (!currentFilePath) {
+      // untitled - delegate to saveAs
+      await performSaveAs();
+      return;
+    }
+
+    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+
+    if (currentIsExternal) {
+      // external file: preserve original frontmatter behavior
+      const rawContent = hasOriginalFrontmatterRef.current
+        ? matter.stringify(markdown, metadataRef.current)
+        : markdown;
+
+      await invoke("update_external_file", {
+        path: currentFilePath,
+        content: rawContent,
+      });
+    } else {
+      // internal file: always use frontmatter
+      const rawContent = matter.stringify(markdown, metadataRef.current);
+      await invoke("update_file", {
+        path: currentFilePath,
+        content: rawContent,
+      });
+    }
+
+    // update dirty tracking
+    savedUndoRef.current = lastElement(editor.history.undos) ?? null;
+    markClean(props.api.id);
+  }, [
+    editor,
+    props.params.filePath,
+    props.params.isExternal,
+    props.api.id,
+    markClean,
+  ]);
+
+  const performSaveAs = useCallback(async () => {
+    if (!editor) return;
+
+    // default to the tab title with .md extension, in the flowrite directory
+    const tabTitle = props.params.title || "untitled";
+    const defaultName = tabTitle.endsWith(".md") ? tabTitle : `${tabTitle}.md`;
+    const baseDir = await getBaseDir();
+    const defaultPath = `${baseDir}/${defaultName}`;
+
+    const selectedPath = await saveDialog({
+      defaultPath,
+      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+    });
+
+    if (!selectedPath) return;
+
+    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+    const isExtPath = !(await isInternalPath(selectedPath));
+
+    if (isExtPath) {
+      const rawContent = hasOriginalFrontmatterRef.current
+        ? matter.stringify(markdown, metadataRef.current)
+        : markdown;
+
+      await invoke("update_external_file", {
+        path: selectedPath,
+        content: rawContent,
+      });
+
+      // update panel params and title
+      const fileName = selectedPath.split("/").pop() || selectedPath;
+      const displayName = fileName.endsWith(".md")
+        ? fileName.slice(0, -3)
+        : fileName;
+
+      props.api.updateParameters({
+        filePath: selectedPath,
+        isExternal: true,
+      });
+      props.api.setTitle(displayName);
+    } else {
+      // convert to relative path for internal file
+      const baseDir = await getBaseDir();
+      let relativePath = selectedPath;
+      if (selectedPath.startsWith(baseDir)) {
+        relativePath = selectedPath.slice(baseDir.length);
+        if (relativePath.startsWith("/")) {
+          relativePath = relativePath.slice(1);
+        }
+      }
+
+      const rawContent = matter.stringify(markdown, metadataRef.current);
+      await invoke("update_file", {
+        path: relativePath,
+        content: rawContent,
+      });
+
+      const fileName = relativePath.split("/").pop() || relativePath;
+      const displayName = fileName.endsWith(".md")
+        ? fileName.slice(0, -3)
+        : fileName;
+
+      props.api.updateParameters({
+        filePath: relativePath,
+        isExternal: false,
+      });
+      props.api.setTitle(displayName);
+    }
+
+    // update dirty tracking
+    savedUndoRef.current = lastElement(editor.history.undos) ?? null;
+    markClean(props.api.id);
+  }, [editor, props.api, props.params.title, markClean]);
+
+  // --- register save callbacks ---
+
+  useEffect(() => {
+    registerEditor(props.api.id, {
+      save: performSave,
+      saveAs: performSaveAs,
+    });
+    return () => unregisterEditor(props.api.id);
+  }, [props.api.id, performSave, performSaveAs]);
 
   // load file content and create editor
   useEffect(() => {
@@ -96,14 +244,26 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     const init = async () => {
       if (filePath) {
         setIsLoading(true);
+        initialLoadCompleteRef.current = false;
         try {
-          const rawContent = await invoke<string>("read_file", {
-            path: filePath,
-          });
+          let rawContent: string;
+
+          if (isExternal) {
+            rawContent = await invoke<string>("read_external_file", {
+              path: filePath,
+            });
+          } else {
+            rawContent = await invoke<string>("read_file", {
+              path: filePath,
+            });
+          }
+
           if (cancelled) return;
 
           const parsed = matter(rawContent);
           metadataRef.current = parsed.data;
+          hasOriginalFrontmatterRef.current =
+            Object.keys(parsed.data).length > 0;
 
           const ed = createPlateEditor({
             plugins: editorPlugins,
@@ -112,19 +272,40 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
                 .getApi(MarkdownPlugin)
                 .markdown.deserialize(parsed.content),
           });
+
           setEditor(ed);
+
+          // mark initial load complete after editor settles
+          requestAnimationFrame(() => {
+            if (!cancelled) {
+              savedUndoRef.current = lastElement(ed.history.undos) ?? null;
+              initialLoadCompleteRef.current = true;
+            }
+          });
         } catch (err) {
           if (cancelled) return;
           console.error("failed to load file:", err);
-          toast.error(`failed to load file: ${err}`);
-          setEditor(createPlateEditor({ plugins: editorPlugins }));
+          const ed = createPlateEditor({ plugins: editorPlugins });
+          setEditor(ed);
+          requestAnimationFrame(() => {
+            if (!cancelled) {
+              initialLoadCompleteRef.current = true;
+            }
+          });
         } finally {
           if (!cancelled) setIsLoading(false);
         }
       } else {
         // untitled tab — create empty editor
-        setEditor(createPlateEditor({ plugins: editorPlugins }));
+        const ed = createPlateEditor({ plugins: editorPlugins });
+        setEditor(ed);
         setIsLoading(false);
+        requestAnimationFrame(() => {
+          if (!cancelled) {
+            savedUndoRef.current = lastElement(ed.history.undos) ?? null;
+            initialLoadCompleteRef.current = true;
+          }
+        });
       }
     };
 
@@ -132,32 +313,19 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     return () => {
       cancelled = true;
     };
-  }, [filePath]);
+  }, [filePath, isExternal]);
 
-  // save with ⌘S
-  useEffect(() => {
-    if (!filePath || !editor) return;
+  // --- onChange handler for dirty tracking ---
+  const handleEditorChange = useCallback(() => {
+    if (!initialLoadCompleteRef.current || !editor) return;
 
-    const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.metaKey && e.key === "s" && props.api.isActive) {
-        e.preventDefault();
-
-        const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
-        const rawContent = matter.stringify(markdown, metadataRef.current);
-
-        invoke("update_file", {
-          path: filePath,
-          content: rawContent,
-        }).catch((err) => {
-          console.error("failed to save file:", err);
-          toast.error(`failed to save file: ${err}`);
-        });
-      }
-    };
-
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [filePath, editor, props.api]);
+    const currentTop = lastElement(editor.history.undos) ?? null;
+    if (currentTop !== savedUndoRef.current) {
+      markDirty(props.api.id);
+    } else {
+      markClean(props.api.id);
+    }
+  }, [editor, props.api.id, markDirty, markClean]);
 
   // mouse movement: show buttons (unless mid-scroll)
   const handleMouseMove = useCallback(() => {
@@ -271,7 +439,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       onMouseMove={handleMouseMove}
       onMouseLeave={handleMouseLeave}
     >
-      <Plate editor={editor}>
+      <Plate editor={editor} onChange={handleEditorChange}>
         <ScrollArea
           className="h-full w-full editor-pane-scroll-area"
           maskHeight={0}

@@ -1,11 +1,45 @@
 import { create } from "zustand";
 import { DockviewApi } from "dockview";
+import { open } from "@tauri-apps/plugin-dialog";
+
+import { getBaseDir, isInternalPath } from "@/lib/utils";
 
 // panel width constraints
 export const LEFT_PANEL_MIN_WIDTH = 150;
 export const LEFT_PANEL_MAX_WIDTH = 800;
 export const RIGHT_PANEL_MIN_WIDTH = 150;
 export const RIGHT_PANEL_MAX_WIDTH = 800;
+
+// --- editor registry (module-level to avoid re-renders) ---
+
+const editorRegistry = new Map<
+  string,
+  {
+    save: () => Promise<void>;
+    saveAs: () => Promise<void>;
+  }
+>();
+
+export function registerEditor(
+  panelId: string,
+  callbacks: { save: () => Promise<void>; saveAs: () => Promise<void> },
+) {
+  editorRegistry.set(panelId, callbacks);
+}
+
+export function unregisterEditor(panelId: string) {
+  editorRegistry.delete(panelId);
+}
+
+// --- save confirmation ---
+
+export interface SaveConfirmation {
+  panelId: string;
+  title: string;
+  resolve: (result: "save" | "discard" | "cancel") => void;
+}
+
+// --- store ---
 
 interface WorkspaceState {
   dockviewApi: DockviewApi | null;
@@ -16,6 +50,8 @@ interface WorkspaceState {
   editorMaximized: boolean;
   activeFilePath: string | null;
   editorTabFocusRequest: number;
+  dirtyPanels: Set<string>;
+  saveConfirmation: SaveConfirmation | null;
 }
 
 interface WorkspaceActions {
@@ -25,6 +61,8 @@ interface WorkspaceActions {
   openFileToSide: (filePath: string) => void;
   closeFile: (filePath: string) => void;
   renameFile: (oldPath: string, newPath: string) => void;
+  openExternalFile: (absolutePath: string) => void;
+  handleOpenFile: () => Promise<void>;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
   setLeftPanelWidth: (width: number) => void;
@@ -32,6 +70,30 @@ interface WorkspaceActions {
   toggleEditorMaximized: () => void;
   setActiveFilePath: (path: string | null) => void;
   requestEditorTabFocus: () => void;
+
+  // dirty tracking
+  markDirty: (panelId: string) => void;
+  markClean: (panelId: string) => void;
+  isDirty: (panelId: string) => boolean;
+  hasDirtyPanels: () => boolean;
+
+  // save orchestration
+  requestSave: () => Promise<void>;
+  requestSaveAll: () => Promise<void>;
+  savePanel: (panelId: string) => Promise<void>;
+
+  // save confirmation
+  requestSaveConfirmation: (
+    panelId: string,
+    title: string,
+  ) => Promise<"save" | "discard" | "cancel">;
+  resolveSaveConfirmation: (result: "save" | "discard" | "cancel") => void;
+
+  // tab management
+  closeTab: (panelId: string) => Promise<void>;
+  closeOtherTabs: (panelId: string) => Promise<void>;
+  closeAllTabs: () => Promise<void>;
+  closeSavedTabs: () => void;
 }
 
 type WorkspaceStore = WorkspaceState & WorkspaceActions;
@@ -45,6 +107,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   editorMaximized: false,
   activeFilePath: null,
   editorTabFocusRequest: 0,
+  dirtyPanels: new Set<string>(),
+  saveConfirmation: null,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -79,6 +143,82 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     set((state) => ({
       editorTabFocusRequest: state.editorTabFocusRequest + 1,
     })),
+
+  // --- dirty tracking ---
+
+  markDirty: (panelId) =>
+    set((state) => {
+      if (state.dirtyPanels.has(panelId)) return state;
+      const next = new Set(state.dirtyPanels);
+      next.add(panelId);
+      return { dirtyPanels: next };
+    }),
+
+  markClean: (panelId) =>
+    set((state) => {
+      if (!state.dirtyPanels.has(panelId)) return state;
+      const next = new Set(state.dirtyPanels);
+      next.delete(panelId);
+      return { dirtyPanels: next };
+    }),
+
+  isDirty: (panelId) => get().dirtyPanels.has(panelId),
+
+  hasDirtyPanels: () => get().dirtyPanels.size > 0,
+
+  // --- save orchestration ---
+
+  requestSave: async () => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    const activePanel = dockviewApi.activePanel;
+    if (!activePanel) return;
+
+    const callbacks = editorRegistry.get(activePanel.id);
+    if (callbacks) {
+      await callbacks.save();
+    }
+  },
+
+  requestSaveAll: async () => {
+    const { dirtyPanels } = get();
+    const promises: Promise<void>[] = [];
+
+    for (const panelId of dirtyPanels) {
+      const callbacks = editorRegistry.get(panelId);
+      if (callbacks) {
+        promises.push(callbacks.save());
+      }
+    }
+
+    await Promise.all(promises);
+  },
+
+  savePanel: async (panelId) => {
+    const callbacks = editorRegistry.get(panelId);
+    if (callbacks) {
+      await callbacks.save();
+    }
+  },
+
+  // --- save confirmation ---
+
+  requestSaveConfirmation: (panelId, title) => {
+    return new Promise<"save" | "discard" | "cancel">((resolve) => {
+      set({ saveConfirmation: { panelId, title, resolve } });
+    });
+  },
+
+  resolveSaveConfirmation: (result) => {
+    const { saveConfirmation } = get();
+    if (saveConfirmation) {
+      saveConfirmation.resolve(result);
+      set({ saveConfirmation: null });
+    }
+  },
+
+  // --- tab management ---
 
   addEditorTab: (targetGroupId) => {
     const { dockviewApi } = get();
@@ -215,6 +355,121 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
         ? { referencePanel: activePanel.id, direction: "right" }
         : undefined,
     });
+  },
+
+  openExternalFile: (absolutePath: string) => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    // if the file is already open, activate that tab
+    for (const panel of dockviewApi.panels) {
+      const params = panel.params as Record<string, unknown>;
+      if (params?.filePath === absolutePath && params?.isExternal === true) {
+        panel.api.setActive();
+        return;
+      }
+    }
+
+    // derive display name from filename
+    const fileName = absolutePath.split("/").pop() || absolutePath;
+    const displayName = fileName.endsWith(".md")
+      ? fileName.slice(0, -3)
+      : fileName;
+    const id = `ext-file-${Date.now()}`;
+
+    dockviewApi.addPanel({
+      id,
+      component: "editor",
+      title: displayName,
+      params: {
+        title: displayName,
+        filePath: absolutePath,
+        isExternal: true,
+      },
+    });
+  },
+
+  handleOpenFile: async () => {
+    const selected = await open({
+      multiple: false,
+      filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+    });
+
+    if (!selected) return;
+
+    const filePath = typeof selected === "string" ? selected : selected;
+
+    const internal = await isInternalPath(filePath);
+    if (internal) {
+      // convert absolute path to relative path for internal files
+      const baseDir = await getBaseDir();
+      let relativePath = filePath;
+      if (filePath.startsWith(baseDir)) {
+        relativePath = filePath.slice(baseDir.length);
+        // remove leading slash
+        if (relativePath.startsWith("/")) {
+          relativePath = relativePath.slice(1);
+        }
+      }
+      get().openFile(relativePath);
+    } else {
+      get().openExternalFile(filePath);
+    }
+  },
+
+  closeTab: async (panelId) => {
+    const { dockviewApi, isDirty, requestSaveConfirmation, savePanel } = get();
+    if (!dockviewApi) return;
+
+    const panel = dockviewApi.panels.find((p) => p.id === panelId);
+    if (!panel) return;
+
+    if (isDirty(panelId)) {
+      const title = panel.title ?? "untitled";
+      const result = await requestSaveConfirmation(panelId, title);
+
+      if (result === "cancel") return;
+      if (result === "save") {
+        await savePanel(panelId);
+      }
+    }
+
+    panel.api.close();
+  },
+
+  closeOtherTabs: async (panelId) => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    const otherPanels = dockviewApi.panels.filter((p) => p.id !== panelId);
+
+    for (const panel of otherPanels) {
+      await get().closeTab(panel.id);
+    }
+  },
+
+  closeAllTabs: async () => {
+    const { dockviewApi } = get();
+    if (!dockviewApi) return;
+
+    // copy list since closing modifies it
+    const panels = [...dockviewApi.panels];
+
+    for (const panel of panels) {
+      await get().closeTab(panel.id);
+    }
+  },
+
+  closeSavedTabs: () => {
+    const { dockviewApi, dirtyPanels } = get();
+    if (!dockviewApi) return;
+
+    const panels = [...dockviewApi.panels];
+    for (const panel of panels) {
+      if (!dirtyPanels.has(panel.id)) {
+        panel.api.close();
+      }
+    }
   },
 }));
 

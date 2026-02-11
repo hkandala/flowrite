@@ -269,6 +269,17 @@
   border: none !important;
 }
 
+/* ---- dirty indicator dot ---- */
+.dirty-indicator {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background-color: oklch(from var(--foreground) l c h / 0.4);
+  margin-left: 4px;
+  flex-shrink: 0;
+}
+
 /* ---- editor pane scroll area fix ----
    radix scroll area wraps children in a display:table div inside
    the viewport. the table layout algorithm sizes to content, which

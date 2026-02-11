@@ -365,3 +365,89 @@ pub async fn rename_file(
 
     Ok(())
 }
+
+// -----------------------------------------
+// external file commands (files outside ~/flowrite/)
+// -----------------------------------------
+
+#[tauri::command]
+pub async fn create_external_file(path: String, content: Option<String>) -> Result<(), String> {
+    log::info!("creating external file: {path}");
+
+    let file_path = std::path::Path::new(&path);
+
+    // create parent dirs if needed
+    if let Some(parent) = file_path.parent() {
+        fs::create_dir_all(parent)
+            .await
+            .map_err(|e| format!("failed to create parent directories for '{path}': {e}"))?;
+    }
+
+    let initial_content = content.unwrap_or_default();
+    fs::write(&path, initial_content)
+        .await
+        .map_err(|e| format!("failed to create external file '{path}': {e}"))?;
+
+    log::info!("created external file: {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn read_external_file(path: String) -> Result<String, String> {
+    log::info!("reading external file: {path}");
+
+    let content = fs::read_to_string(&path)
+        .await
+        .map_err(|e| format!("failed to read external file '{path}': {e}"))?;
+
+    log::info!("read external file: {path}");
+
+    Ok(content)
+}
+
+#[tauri::command]
+pub async fn update_external_file(path: String, content: String) -> Result<(), String> {
+    log::info!("updating external file: {path}");
+
+    fs::write(&path, content)
+        .await
+        .map_err(|e| format!("failed to update external file '{path}': {e}"))?;
+
+    log::info!("updated external file: {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn delete_external_file(path: String) -> Result<(), String> {
+    log::info!("deleting external file (to trash): {path}");
+
+    let path_clone = path.clone();
+    tokio::task::spawn_blocking(move || {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut ctx = trash::TrashContext::default();
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+        ctx.delete(&path_clone)
+    })
+    .await
+    .map_err(|e| format!("failed to trash external file '{path}': {e}"))?
+    .map_err(|e| format!("failed to trash external file '{path}': {e}"))?;
+
+    log::info!("deleted external file (to trash): {path}");
+
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn rename_external_file(old_path: String, new_path: String) -> Result<(), String> {
+    log::info!("renaming external file: {old_path} -> {new_path}");
+
+    fs::rename(&old_path, &new_path)
+        .await
+        .map_err(|e| format!("failed to rename external file '{old_path}' to '{new_path}': {e}"))?;
+
+    log::info!("renamed external file: {old_path} -> {new_path}");
+
+    Ok(())
+}

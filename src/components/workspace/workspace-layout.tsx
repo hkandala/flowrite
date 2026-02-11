@@ -12,7 +12,9 @@ import {
   PanelRightDashed,
   Plus,
   Settings,
+  SquarePen,
   TextCursor,
+  Upload,
 } from "lucide-react";
 import {
   DockviewReact,
@@ -43,6 +45,9 @@ import {
 import { FileTreePane } from "./file-tree-pane";
 import { AiChatPane } from "./ai-chat-pane";
 import { EditorPane } from "./editor-pane";
+import { EditorTab } from "./editor-tab";
+import { SaveConfirmationDialog } from "./save-confirmation-dialog";
+import { unregisterEditor } from "@/store/workspace-store";
 
 const customTheme: DockviewTheme = {
   ...themeAbyssSpaced,
@@ -68,6 +73,7 @@ function AddTabButton(props: IDockviewHeaderActionsProps) {
 
 function EmptyState() {
   const addEditorTab = useWorkspaceStore((state) => state.addEditorTab);
+  const handleOpenFile = useWorkspaceStore((state) => state.handleOpenFile);
 
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-6 m-1 rounded-xl border border-foreground/6">
@@ -82,13 +88,22 @@ function EmptyState() {
           </h1>
         </div>
 
-        {/* new note */}
+        {/* new file */}
         <button
           onClick={() => addEditorTab()}
           className="flex w-full items-center justify-center gap-2 rounded-xl border border-foreground/8 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground"
         >
-          <Plus className="h-4 w-4" />
-          new note
+          <SquarePen className="h-3.5 w-3.5 -translate-y-px" />
+          new file
+        </button>
+
+        {/* open file */}
+        <button
+          onClick={() => handleOpenFile()}
+          className="flex w-full items-center justify-center gap-2 rounded-xl border border-foreground/8 py-2 text-sm text-muted-foreground transition-colors hover:bg-foreground/8 hover:text-foreground"
+        >
+          <Upload className="h-3.5 w-3.5 -translate-y-px" />
+          open file
         </button>
       </div>
     </div>
@@ -219,7 +234,7 @@ export function WorkspaceLayout() {
     }
   }, [dockviewApi, leftPanelVisible, rightPanelVisible, editorMaximized]);
 
-  // sync activeFilePath with the dockview active panel
+  // sync activeFilePath with the dockview active panel + cleanup on panel removal
   useEffect(() => {
     if (!dockviewApi) return;
 
@@ -237,11 +252,21 @@ export function WorkspaceLayout() {
     syncActiveFile();
 
     // listen for tab switches, closes, etc.
-    const disposable = dockviewApi.onDidActivePanelChange(() => {
+    const activeDisposable = dockviewApi.onDidActivePanelChange(() => {
       syncActiveFile();
     });
 
-    return () => disposable.dispose();
+    // cleanup dirty state and editor registry when panel is removed
+    const markClean = useWorkspaceStore.getState().markClean;
+    const removeDisposable = dockviewApi.onDidRemovePanel((event) => {
+      markClean(event.id);
+      unregisterEditor(event.id);
+    });
+
+    return () => {
+      activeDisposable.dispose();
+      removeDisposable.dispose();
+    };
   }, [dockviewApi, setActiveFilePath]);
 
   // keyboard shortcuts
@@ -423,6 +448,7 @@ export function WorkspaceLayout() {
             onReady={onReady}
             components={components}
             theme={customTheme}
+            defaultTabComponent={EditorTab}
             rightHeaderActionsComponent={AddTabButton}
             watermarkComponent={EmptyState}
             disableFloatingGroups
@@ -462,6 +488,9 @@ export function WorkspaceLayout() {
           )}
         </div>
       </div>
+
+      {/* save confirmation dialog */}
+      <SaveConfirmationDialog />
     </div>
   );
 }

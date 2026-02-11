@@ -1,5 +1,5 @@
 use tauri::menu::{Menu, MenuId, MenuItem, PredefinedMenuItem, Submenu};
-use tauri::{Manager, RunEvent};
+use tauri::{Emitter, Manager, RunEvent};
 
 mod command;
 mod constants;
@@ -12,6 +12,7 @@ pub fn run() {
         .plugin(tauri_plugin_store::Builder::new().build())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(
             tauri_plugin_log::Builder::new()
                 .level_for("notify", log::LevelFilter::Warn)
@@ -30,6 +31,11 @@ pub fn run() {
             command::update_file,
             command::delete_file,
             command::rename_file,
+            command::create_external_file,
+            command::read_external_file,
+            command::update_external_file,
+            command::delete_external_file,
+            command::rename_external_file,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
@@ -51,11 +57,32 @@ pub fn run() {
                     if let Some(window) = app_handle.get_focused_window() {
                         let _ = window.close();
                     }
+                } else if let Some(window) = app_handle.get_focused_window() {
+                    // forward remaining menu clicks to the frontend
+                    let event_name = format!("menu-{}", menu_id.0);
+                    log::info!("{} menu clicked", menu_id.0);
+                    let _ = window.emit(&event_name, ());
                 }
             }
             RunEvent::Reopen { .. } => {
                 log::info!("app reopen event received");
                 command::show_or_create_workspace_window(app_handle);
+            }
+            RunEvent::Opened { urls } => {
+                log::info!("app opened with {} URL(s)", urls.len());
+                command::show_or_create_workspace_window(app_handle);
+
+                // convert file:// URLs to paths and emit to frontend
+                for url in urls {
+                    if let Ok(path) = url.to_file_path() {
+                        if let Some(path_str) = path.to_str() {
+                            log::info!("opening file from OS: {}", path_str);
+                            if let Some(window) = app_handle.get_focused_window() {
+                                let _ = window.emit("open-file-from-os", path_str.to_string());
+                            }
+                        }
+                    }
+                }
             }
             _ => {}
         });
@@ -64,6 +91,11 @@ pub fn run() {
 const QUIT_MENU_ID: &str = "quit";
 const NEW_WINDOW_MENU_ID: &str = "new-window";
 const CLOSE_WINDOW_MENU_ID: &str = "close-window";
+const CLOSE_EDITOR_MENU_ID: &str = "close-editor";
+const SAVE_MENU_ID: &str = "save";
+const SAVE_ALL_MENU_ID: &str = "save-all";
+const NEW_FILE_MENU_ID: &str = "new-file";
+const OPEN_FILE_MENU_ID: &str = "open-file";
 
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // create custom menu
@@ -118,6 +150,11 @@ fn setup_app_menu(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
     )?;
 
     // create file submenu
+    // NOTE: shortcuts for New File, Open, Save, Save All, and Close Editor
+    // are handled in the frontend keydown handler (not as native accelerators)
+    // so that key-repeat is properly suppressed via `e.repeat`.
+    let new_file_item =
+        MenuItem::with_id(handle, NEW_FILE_MENU_ID, "New File", true, None::<&str>)?;
     let new_window_item = MenuItem::with_id(
         handle,
         NEW_WINDOW_MENU_ID,
@@ -125,12 +162,29 @@ fn setup_app_menu(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         true,
         Some("CmdOrCtrl+Shift+N"),
     )?;
+    let open_file_item = MenuItem::with_id(
+        handle,
+        OPEN_FILE_MENU_ID,
+        "Open File...",
+        true,
+        None::<&str>,
+    )?;
+    let save_item = MenuItem::with_id(handle, SAVE_MENU_ID, "Save", true, None::<&str>)?;
+    let save_all_item =
+        MenuItem::with_id(handle, SAVE_ALL_MENU_ID, "Save All", true, None::<&str>)?;
+    let close_editor_item = MenuItem::with_id(
+        handle,
+        CLOSE_EDITOR_MENU_ID,
+        "Close Editor",
+        true,
+        None::<&str>,
+    )?;
     let close_window_item = MenuItem::with_id(
         handle,
         CLOSE_WINDOW_MENU_ID,
         "Close Window",
         true,
-        Some("CmdOrCtrl+W"),
+        Some("CmdOrCtrl+Shift+W"),
     )?;
 
     let file_submenu = Submenu::with_items(
@@ -138,8 +192,15 @@ fn setup_app_menu(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>
         "File",
         true,
         &[
+            &new_file_item,
             &new_window_item,
             &PredefinedMenuItem::separator(handle)?,
+            &open_file_item,
+            &PredefinedMenuItem::separator(handle)?,
+            &save_item,
+            &save_all_item,
+            &PredefinedMenuItem::separator(handle)?,
+            &close_editor_item,
             &close_window_item,
         ],
     )?;
