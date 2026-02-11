@@ -127,18 +127,11 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const { dockviewApi } = get();
     if (!dockviewApi) return;
 
-    const panelsToClose = dockviewApi.panels.filter((panel) => {
-      const panelPath = (panel.params as Record<string, unknown>)?.filePath as
-        | string
-        | undefined;
-      if (!panelPath) return false;
-      return (
-        panelPath === filePath || panelPath.startsWith(filePath + "/")
-      );
-    });
-
-    for (const panel of panelsToClose) {
-      panel.api.close();
+    for (const panel of dockviewApi.panels) {
+      if ((panel.params as Record<string, unknown>)?.filePath === filePath) {
+        panel.api.close();
+        return;
+      }
     }
   },
 

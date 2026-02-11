@@ -944,16 +944,6 @@ export function FileTreePane() {
       // clear caches for the deleted item and all descendants
       if (isDir) {
         const prefix = itemPath + "/";
-        // invalidate headless-tree's internal cache for deleted folders
-        for (const [key, item] of itemCacheRef.current) {
-          if ((key === itemPath || key.startsWith(prefix)) && item.isDir) {
-            try {
-              tree.getItemInstance(key).invalidateChildrenIds();
-            } catch {
-              /* item may not be loaded */
-            }
-          }
-        }
         for (const key of childrenCacheRef.current.keys()) {
           if (key === itemPath || key.startsWith(prefix)) {
             childrenCacheRef.current.delete(key);
