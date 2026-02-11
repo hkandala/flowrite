@@ -211,8 +211,7 @@ export function WorkspaceLayout() {
       invoke<string[]>("take_pending_files")
         .then(async (files) => {
           if (files.length === 0) return;
-          const { openFile, openExternalFile } =
-            useWorkspaceStore.getState();
+          const { openFile, openExternalFile } = useWorkspaceStore.getState();
           for (const absolutePath of files) {
             await openFileFromAbsolutePath(
               absolutePath,
