@@ -295,7 +295,6 @@ function BlockComment({
           <Comment
             key={comment.id ?? index}
             comment={comment}
-            discussionLength={discussion.comments.length}
             documentContent={discussion?.documentContent}
             editingId={editingId}
             index={index}

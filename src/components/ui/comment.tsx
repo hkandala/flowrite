@@ -10,13 +10,7 @@ import {
   differenceInMinutes,
   format,
 } from "date-fns";
-import {
-  CheckIcon,
-  MoreHorizontalIcon,
-  PencilIcon,
-  TrashIcon,
-  XIcon,
-} from "lucide-react";
+import { CheckIcon, PencilIcon, XIcon } from "lucide-react";
 import { type Value, HistoryApi, KEYS, nanoid, NodeApi } from "platejs";
 import {
   Plate,
@@ -27,13 +21,6 @@ import {
 } from "platejs/react";
 
 import { Button } from "@/components/ui/button";
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuGroup,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
 import {
   Tooltip,
   TooltipContent,
@@ -58,21 +45,13 @@ export type TComment = {
 
 export function Comment(props: {
   comment: TComment;
-  discussionLength: number;
   editingId: string | null;
   index: number;
   setEditingId: React.Dispatch<React.SetStateAction<string | null>>;
   documentContent?: string;
   onDiscussionChange?: () => void;
 }) {
-  const {
-    comment,
-    discussionLength,
-    editingId,
-    index,
-    setEditingId,
-    onDiscussionChange,
-  } = props;
+  const { comment, editingId, index, setEditingId, onDiscussionChange } = props;
 
   const editor = useEditorRef();
   const userInfo = usePluginOption(discussionPlugin, "user", comment.userId);
@@ -82,14 +61,6 @@ export function Comment(props: {
     const updatedDiscussions = editor
       .getOption(discussionPlugin, "discussions")
       .map((d) => (d.id === id ? { ...d, isResolved: true } : d));
-    editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
-    onDiscussionChange?.();
-  };
-
-  const removeDiscussion = (id: string) => {
-    const updatedDiscussions = editor
-      .getOption(discussionPlugin, "discussions")
-      .filter((d) => d.id !== id);
     editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
     onDiscussionChange?.();
   };
@@ -165,7 +136,15 @@ export function Comment(props: {
 
   const isEditing = editingId === comment.id;
   const [hovering, setHovering] = React.useState(false);
-  const [dropdownOpen, setDropdownOpen] = React.useState(false);
+
+  // Focus comment editor when entering edit mode
+  React.useEffect(() => {
+    if (isEditing) {
+      setTimeout(() => {
+        commentEditor.tf.focus({ edge: "endEditor" });
+      }, 0);
+    }
+  }, [isEditing]);
 
   // Handle Escape to cancel editing
   React.useEffect(() => {
@@ -198,7 +177,7 @@ export function Comment(props: {
           </TooltipContent>
         </Tooltip>
 
-        {isMyComment && (hovering || dropdownOpen) && (
+        {isMyComment && hovering && !isEditing && (
           <div className="absolute right-0 flex space-x-0.5">
             {index === 0 && (
               <Button
@@ -213,26 +192,17 @@ export function Comment(props: {
                 <CheckIcon className="size-3" />
               </Button>
             )}
-            <CommentMoreDropdown
-              onCloseAutoFocus={() => {
-                setTimeout(() => {
-                  commentEditor.tf.focus({ edge: "endEditor" });
-                }, 0);
+            <Button
+              variant="ghost"
+              className="h-5 w-5 p-0 text-muted-foreground"
+              onClick={(e) => {
+                e.stopPropagation();
+                setEditingId(comment.id);
               }}
-              onRemoveComment={() => {
-                if (discussionLength === 1) {
-                  HistoryApi.withoutSaving(editor, () => {
-                    tf.comment.unsetMark({ id: comment.discussionId });
-                  });
-                  void removeDiscussion(comment.discussionId);
-                }
-              }}
-              onDiscussionChange={onDiscussionChange}
-              comment={comment}
-              dropdownOpen={dropdownOpen}
-              setDropdownOpen={setDropdownOpen}
-              setEditingId={setEditingId}
-            />
+              type="button"
+            >
+              <PencilIcon className="size-3" />
+            </Button>
           </div>
         )}
       </div>
@@ -285,90 +255,6 @@ export function Comment(props: {
         )}
       </div>
     </div>
-  );
-}
-
-function CommentMoreDropdown(props: {
-  comment: TComment;
-  dropdownOpen: boolean;
-  setDropdownOpen: React.Dispatch<React.SetStateAction<boolean>>;
-  setEditingId: React.Dispatch<React.SetStateAction<string | null>>;
-  onCloseAutoFocus?: () => void;
-  onRemoveComment?: () => void;
-  onDiscussionChange?: () => void;
-}) {
-  const {
-    comment,
-    dropdownOpen,
-    setDropdownOpen,
-    setEditingId,
-    onCloseAutoFocus,
-    onRemoveComment,
-    onDiscussionChange,
-  } = props;
-
-  const editor = useEditorRef();
-  const selectedEditCommentRef = React.useRef(false);
-
-  const onDeleteComment = React.useCallback(() => {
-    const updatedDiscussions = editor
-      .getOption(discussionPlugin, "discussions")
-      .map((d) => {
-        if (d.id !== comment.discussionId) return d;
-        return {
-          ...d,
-          comments: d.comments.filter((c) => c.id !== comment.id),
-        };
-      });
-    editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
-    onDiscussionChange?.();
-    onRemoveComment?.();
-  }, [
-    comment.discussionId,
-    comment.id,
-    editor,
-    onRemoveComment,
-    onDiscussionChange,
-  ]);
-
-  const onEditComment = React.useCallback(() => {
-    selectedEditCommentRef.current = true;
-    setEditingId(comment.id);
-  }, [comment.id, setEditingId]);
-
-  return (
-    <DropdownMenu
-      open={dropdownOpen}
-      onOpenChange={setDropdownOpen}
-      modal={false}
-    >
-      <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-        <Button variant="ghost" className="h-5 w-5 p-0 text-muted-foreground">
-          <MoreHorizontalIcon className="size-3" />
-        </Button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent
-        className="w-40"
-        onCloseAutoFocus={(e) => {
-          if (selectedEditCommentRef.current) {
-            onCloseAutoFocus?.();
-            selectedEditCommentRef.current = false;
-          }
-          return e.preventDefault();
-        }}
-      >
-        <DropdownMenuGroup>
-          <DropdownMenuItem onClick={onEditComment}>
-            <PencilIcon className="size-3.5" />
-            edit
-          </DropdownMenuItem>
-          <DropdownMenuItem onClick={onDeleteComment}>
-            <TrashIcon className="size-3.5" />
-            delete
-          </DropdownMenuItem>
-        </DropdownMenuGroup>
-      </DropdownMenuContent>
-    </DropdownMenu>
   );
 }
 

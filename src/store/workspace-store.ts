@@ -63,6 +63,7 @@ interface WorkspaceState {
   activeEditor: PlateEditor | null;
   rightPanelTab: "chat" | "comments";
   activeCommentId: string | null;
+  showNewDocComment: boolean;
 }
 
 interface WorkspaceActions {
@@ -86,6 +87,8 @@ interface WorkspaceActions {
   setRightPanelTab: (tab: "chat" | "comments") => void;
   setActiveCommentId: (id: string | null) => void;
   openCommentInPanel: (commentId: string) => void;
+  openNewDocComment: () => void;
+  setShowNewDocComment: (show: boolean) => void;
 
   // dirty tracking
   markDirty: (panelId: string) => void;
@@ -133,6 +136,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   activeEditor: null,
   rightPanelTab: "chat",
   activeCommentId: null,
+  showNewDocComment: false,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -177,6 +181,15 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
       rightPanelTab: "comments",
       activeCommentId: commentId,
     }),
+
+  openNewDocComment: () =>
+    set({
+      rightPanelVisible: true,
+      rightPanelTab: "comments",
+      showNewDocComment: true,
+    }),
+
+  setShowNewDocComment: (show) => set({ showNewDocComment: show }),
 
   // --- dirty tracking ---
 

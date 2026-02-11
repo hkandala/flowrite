@@ -2,7 +2,7 @@ import * as React from "react";
 
 import { getDraftCommentKey } from "@platejs/comment";
 import { CommentPlugin } from "@platejs/comment/react";
-import { MessageSquareText, Plus } from "lucide-react";
+import { MessageSquarePlus, MessageSquareText, Plus } from "lucide-react";
 import { HistoryApi, nanoid } from "platejs";
 import { Plate, useEditorRef, usePluginOption } from "platejs/react";
 
@@ -51,6 +51,28 @@ function CommentsList() {
   const activeDiscussions = React.useMemo(() => {
     const unresolved = discussions.filter((d: TDiscussion) => !d.isResolved);
 
+    // Build a map of discussionId → first block index by scanning the document
+    const positionMap = new Map<string, number>();
+    for (let blockIdx = 0; blockIdx < editor.children.length; blockIdx++) {
+      const walk = (node: any) => {
+        if (typeof node.text === "string") {
+          for (const key of Object.keys(node)) {
+            if (key.startsWith("comment_") && key !== "comment_draft") {
+              const id = key.slice("comment_".length);
+              if (!positionMap.has(id)) {
+                positionMap.set(id, blockIdx);
+              }
+            }
+          }
+          return;
+        }
+        if (node.children) {
+          for (const child of node.children) walk(child);
+        }
+      };
+      walk(editor.children[blockIdx]);
+    }
+
     return [...unresolved].sort((a, b) => {
       // Doc-level comments have no text anchor (no documentContent)
       const isDocLevelA = !a.documentContent;
@@ -65,23 +87,13 @@ function CommentsList() {
       if (isDocLevelA) return -1;
       if (isDocLevelB) return 1;
 
-      // Both have text anchors — sort by position in the document
-      const nodeA = editor.getApi(CommentPlugin).comment.node({ id: a.id });
-      const nodeB = editor.getApi(CommentPlugin).comment.node({ id: b.id });
+      // Sort by block position in the document
+      const blockA = positionMap.get(a.id) ?? Infinity;
+      const blockB = positionMap.get(b.id) ?? Infinity;
 
-      if (!nodeA && !nodeB) return 0;
-      if (!nodeA) return -1;
-      if (!nodeB) return 1;
+      if (blockA !== blockB) return blockA - blockB;
 
-      // Compare by path position in the document
-      const pathA = nodeA[1];
-      const pathB = nodeB[1];
-      for (let i = 0; i < Math.min(pathA.length, pathB.length); i++) {
-        if (pathA[i] !== pathB[i]) return pathA[i] - pathB[i];
-      }
-      if (pathA.length !== pathB.length) return pathA.length - pathB.length;
-
-      // Same position — sort by creation date
+      // Same block — sort by creation date
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
   }, [discussions, editor]);
@@ -94,6 +106,15 @@ function CommentsList() {
   React.useEffect(() => {
     if (isDraft) setShowDocComment(false);
   }, [isDraft]);
+
+  // Open doc-level form when triggered by hotkey
+  const showNewDocCommentFlag = useWorkspaceStore((s) => s.showNewDocComment);
+  React.useEffect(() => {
+    if (showNewDocCommentFlag) {
+      setShowDocComment(true);
+      useWorkspaceStore.getState().setShowNewDocComment(false);
+    }
+  }, [showNewDocCommentFlag]);
 
   React.useEffect(() => {
     if (activeCommentId && activeRef.current) {
@@ -143,7 +164,7 @@ function CommentsList() {
           onClick={() => setShowDocComment(true)}
           className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8 text-muted-foreground hover:text-foreground hover:border-foreground/15 hover:bg-foreground/5 transition-colors cursor-pointer"
         >
-          <MessageSquareText className="h-5 w-5" />
+          <MessageSquarePlus className="h-5 w-5" />
         </button>
         <span className="text-sm">add new comment</span>
       </div>
@@ -249,7 +270,6 @@ function DiscussionCard({
             {index > 0 && <div className="my-3 h-px bg-border/60" />}
             <Comment
               comment={comment}
-              discussionLength={discussion.comments.length}
               documentContent={discussion.documentContent}
               editingId={editingId}
               index={index}
@@ -260,11 +280,13 @@ function DiscussionCard({
         ))}
 
         <div className="my-3 h-px bg-border/60" />
-        <CommentCreateForm
-          discussionId={discussion.id}
-          placeholder="reply..."
-          onDiscussionChange={persistActiveEditorMetadata}
-        />
+        <div onClick={(e) => e.stopPropagation()}>
+          <CommentCreateForm
+            discussionId={discussion.id}
+            placeholder="reply..."
+            onDiscussionChange={persistActiveEditorMetadata}
+          />
+        </div>
       </div>
     </div>
   );

@@ -80,7 +80,9 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
     }) => ({
       setDraft: () => {
         if (editor.api.isCollapsed()) {
-          editor.tf.select(editor.api.block()![1]);
+          // No text selected — open doc-level comment
+          useWorkspaceStore.getState().openNewDocComment();
+          return;
         }
 
         HistoryApi.withoutSaving(editor, () => {
@@ -97,7 +99,7 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
   .configure({
     node: { component: CommentLeaf },
     shortcuts: {
-      setDraft: { keys: "mod+shift+m" },
+      setDraft: { keys: "mod+d" },
     },
   })
   .extend({

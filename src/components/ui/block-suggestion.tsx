@@ -209,7 +209,6 @@ export function BlockSuggestionCard({
           <Comment
             key={comment.id ?? index}
             comment={comment}
-            discussionLength={suggestion.comments.length}
             documentContent="__suggestion__"
             editingId={editingId}
             index={index}
