@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { DockviewApi } from "dockview";
 import { open } from "@tauri-apps/plugin-dialog";
+import type { PlateEditor } from "platejs/react";
 
 import { getBaseDir, isInternalPath } from "@/lib/utils";
 
@@ -18,6 +19,7 @@ interface EditorCallbacks {
   focus: () => void;
   toggleMaximize: () => void;
   toggleFullWidth: () => void;
+  persistMetadata: () => void;
 }
 
 const editorRegistry = new Map<string, EditorCallbacks>();
@@ -58,6 +60,9 @@ interface WorkspaceState {
   dirtyPanels: Set<string>;
   saveConfirmation: SaveConfirmation | null;
   quitConfirmation: QuitConfirmation | null;
+  activeEditor: PlateEditor | null;
+  rightPanelTab: "chat" | "comments";
+  activeCommentId: string | null;
 }
 
 interface WorkspaceActions {
@@ -75,6 +80,12 @@ interface WorkspaceActions {
   setRightPanelWidth: (width: number) => void;
   toggleEditorMaximized: () => void;
   setActiveFilePath: (path: string | null) => void;
+
+  // comments / right panel
+  setActiveEditor: (editor: PlateEditor | null) => void;
+  setRightPanelTab: (tab: "chat" | "comments") => void;
+  setActiveCommentId: (id: string | null) => void;
+  openCommentInPanel: (commentId: string) => void;
 
   // dirty tracking
   markDirty: (panelId: string) => void;
@@ -113,12 +124,15 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   leftPanelVisible: true,
   rightPanelVisible: true,
   leftPanelWidth: 300,
-  rightPanelWidth: 300,
+  rightPanelWidth: 350,
   editorMaximized: false,
   activeFilePath: null,
   dirtyPanels: new Set<string>(),
   saveConfirmation: null,
   quitConfirmation: null,
+  activeEditor: null,
+  rightPanelTab: "chat",
+  activeCommentId: null,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -148,6 +162,21 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     set((state) => ({ editorMaximized: !state.editorMaximized })),
 
   setActiveFilePath: (path) => set({ activeFilePath: path }),
+
+  // --- comments / right panel ---
+
+  setActiveEditor: (editor) => set({ activeEditor: editor }),
+
+  setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
+
+  setActiveCommentId: (id) => set({ activeCommentId: id }),
+
+  openCommentInPanel: (commentId) =>
+    set({
+      rightPanelVisible: true,
+      rightPanelTab: "comments",
+      activeCommentId: commentId,
+    }),
 
   // --- dirty tracking ---
 
@@ -547,6 +576,14 @@ export function toggleActiveEditorFullWidth() {
   callbacks?.toggleFullWidth();
 }
 
+/** Trigger debounced metadata persist on the active panel's editor. */
+export function persistActiveEditorMetadata() {
+  const { dockviewApi } = useWorkspaceStore.getState();
+  if (!dockviewApi?.activePanel) return;
+
+  const callbacks = editorRegistry.get(dockviewApi.activePanel.id);
+  callbacks?.persistMetadata();
+}
 function nextUntitledNumber(dockviewApi: DockviewApi): number {
   const usedNumbers = new Set<number>();
   for (const panel of dockviewApi.panels) {

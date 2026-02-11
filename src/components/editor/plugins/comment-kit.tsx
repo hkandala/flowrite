@@ -1,3 +1,5 @@
+import * as React from "react";
+
 import type { ExtendConfig, Path } from "platejs";
 
 import {
@@ -5,10 +7,11 @@ import {
   BaseCommentPlugin,
   getDraftCommentKey,
 } from "@platejs/comment";
-import { isSlateString } from "platejs";
-import { toTPlatePlugin } from "platejs/react";
+import { HistoryApi, isSlateString } from "platejs";
+import { toTPlatePlugin, useEditorSelection } from "platejs/react";
 
 import { CommentLeaf } from "@/components/ui/comment-node";
+import { useWorkspaceStore } from "@/store/workspace-store";
 
 type CommentConfig = ExtendConfig<
   BaseCommentConfig,
@@ -46,6 +49,9 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
           const id = api.comment!.nodeId(commentsEntry[0]);
 
           setOption("activeId", id ?? null);
+          if (id) {
+            useWorkspaceStore.getState().openCommentInPanel(id);
+          }
           isSet = true;
 
           break;
@@ -77,11 +83,14 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
           editor.tf.select(editor.api.block()![1]);
         }
 
-        setDraft();
+        HistoryApi.withoutSaving(editor, () => {
+          setDraft();
+        });
 
         editor.tf.collapse();
         setOption("activeId", getDraftCommentKey());
         setOption("commentingBlock", editor.selection!.focus.path.slice(0, 1));
+        useWorkspaceStore.getState().openCommentInPanel(getDraftCommentKey());
       },
     }),
   )
@@ -89,6 +98,28 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
     node: { component: CommentLeaf },
     shortcuts: {
       setDraft: { keys: "mod+shift+m" },
+    },
+  })
+  .extend({
+    useHooks: ({ api, getOption, setOption }) => {
+      const selection = useEditorSelection();
+
+      React.useEffect(() => {
+        if (!selection) return;
+        // Don't override draft comment state
+        if (getOption("activeId") === getDraftCommentKey()) return;
+
+        const commentsEntry = api.comment.node();
+        if (commentsEntry) {
+          const id = api.comment.nodeId(commentsEntry[0]);
+          if (id) {
+            setOption("activeId", id);
+            return;
+          }
+        }
+
+        setOption("activeId", null);
+      }, [api, getOption, selection, setOption]);
     },
   });
 

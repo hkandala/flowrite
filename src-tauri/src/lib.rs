@@ -52,6 +52,7 @@ pub fn run() {
             command::update_file,
             command::delete_file,
             command::rename_file,
+            command::write_file_metadata,
             command::create_external_file,
             command::read_external_file,
             command::update_external_file,

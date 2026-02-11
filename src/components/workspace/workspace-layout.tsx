@@ -47,7 +47,7 @@ import {
   RIGHT_PANEL_MAX_WIDTH,
 } from "@/store/workspace-store";
 import { FileTreePane } from "./file-tree-pane";
-import { AiChatPane } from "./ai-chat-pane";
+import { RightPanel } from "./right-panel";
 import { EditorPane } from "./editor-pane";
 import { EditorTab } from "./editor-tab";
 import { SaveConfirmationDialog } from "./save-confirmation-dialog";
@@ -512,7 +512,7 @@ export function WorkspaceLayout() {
                 maxWidth={RIGHT_PANEL_MAX_WIDTH}
                 onWidthChange={setRightPanelWidth}
               />
-              <AiChatPane />
+              <RightPanel />
             </>
           )}
         </div>

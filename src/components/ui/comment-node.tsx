@@ -6,6 +6,7 @@ import { PlateLeaf, useEditorPlugin, usePluginOption } from "platejs/react";
 
 import { cn } from "@/lib/utils";
 import { commentPlugin } from "@/components/editor/plugins/comment-kit";
+import { useWorkspaceStore } from "@/store/workspace-store";
 
 export function CommentLeaf(props: PlateLeafProps<TCommentText>) {
   const { children, leaf } = props;
@@ -32,7 +33,12 @@ export function CommentLeaf(props: PlateLeafProps<TCommentText>) {
       )}
       attributes={{
         ...props.attributes,
-        onClick: () => setOption("activeId", currentId ?? null),
+        onClick: () => {
+          setOption("activeId", currentId ?? null);
+          if (currentId) {
+            useWorkspaceStore.getState().openCommentInPanel(currentId);
+          }
+        },
         onMouseEnter: () => setOption("hoverId", currentId ?? null),
         onMouseLeave: () => setOption("hoverId", null),
       }}

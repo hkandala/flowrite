@@ -36,6 +36,7 @@ import {
   discussionPlugin,
 } from "@/components/editor/plugins/discussion-kit";
 import { suggestionPlugin } from "@/components/editor/plugins/suggestion-kit";
+import { persistActiveEditorMetadata } from "@/store/workspace-store";
 
 import {
   BlockSuggestionCard,
@@ -207,7 +208,11 @@ const BlockCommentContent = ({
           side="bottom"
         >
           {isCommenting ? (
-            <CommentCreateForm className="p-4" focusOnMount />
+            <CommentCreateForm
+              className="p-4"
+              focusOnMount
+              onDiscussionChange={persistActiveEditorMetadata}
+            />
           ) : noneActive ? (
             sortedMergedData.map((item, index) =>
               isResolvedSuggestion(item) ? (
@@ -295,10 +300,13 @@ function BlockComment({
             editingId={editingId}
             index={index}
             setEditingId={setEditingId}
-            showDocumentContent
+            onDiscussionChange={persistActiveEditorMetadata}
           />
         ))}
-        <CommentCreateForm discussionId={discussion.id} />
+        <CommentCreateForm
+          discussionId={discussion.id}
+          onDiscussionChange={persistActiveEditorMetadata}
+        />
       </div>
 
       {!isLast && <div className="h-px w-full bg-muted" />}

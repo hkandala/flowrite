@@ -29,6 +29,7 @@ import {
   discussionPlugin,
 } from "@/components/editor/plugins/discussion-kit";
 import { suggestionPlugin } from "@/components/editor/plugins/suggestion-kit";
+import { persistActiveEditorMetadata } from "@/store/workspace-store";
 
 import {
   type TComment,
@@ -213,6 +214,7 @@ export function BlockSuggestionCard({
             editingId={editingId}
             index={index}
             setEditingId={setEditingId}
+            onDiscussionChange={persistActiveEditorMetadata}
           />
         ))}
 
@@ -236,7 +238,10 @@ export function BlockSuggestionCard({
           </div>
         )}
 
-        <CommentCreateForm discussionId={suggestion.suggestionId} />
+        <CommentCreateForm
+          discussionId={suggestion.suggestionId}
+          onDiscussionChange={persistActiveEditorMetadata}
+        />
       </div>
 
       {!isLast && <div className="h-px w-full bg-muted" />}

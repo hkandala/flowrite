@@ -12,6 +12,8 @@ import { invoke } from "@tauri-apps/api/core";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import matter from "gray-matter";
 import { MarkdownPlugin } from "@platejs/markdown";
+import { getCommentKey } from "@platejs/comment";
+import { nanoid, NodeApi } from "platejs";
 
 import { cn, getBaseDir, isInternalPath } from "@/lib/utils";
 import { Editor as PlateEditor, EditorContainer } from "@/components/ui/editor";
@@ -40,6 +42,13 @@ import { AutoformatKit } from "@/components/editor/plugins/autoformat-kit";
 import { ExitBreakKit } from "@/components/editor/plugins/exit-break-kit";
 import { SlashKit } from "../editor/plugins/slash-kit";
 import { FloatingToolbarKit } from "../editor/plugins/floating-toolbar-kit";
+import { CommentKit } from "../editor/plugins/comment-kit";
+import {
+  DiscussionKit,
+  discussionPlugin,
+  type TDiscussion,
+} from "../editor/plugins/discussion-kit";
+import type { TComment } from "@/components/ui/comment";
 
 const BUTTON_TIMEOUT = 1500;
 const SCROLL_DEBOUNCE = 300;
@@ -47,6 +56,300 @@ const SCROLL_DEBOUNCE = 300;
 /** Get the last element of an array (ES2020-safe alternative to .at(-1)) */
 function lastElement<T>(arr: T[]): T | undefined {
   return arr[arr.length - 1];
+}
+
+// --- comment serialization/deserialization ---
+
+interface SerializedComment {
+  user: string;
+  content: string;
+  createdAt: string;
+}
+
+interface SerializedDiscussion {
+  documentContent: string;
+  createdAt: string;
+  startBlock?: number;
+  startOffset?: number;
+  endBlock?: number;
+  endOffset?: number;
+  comments: SerializedComment[];
+}
+
+/** Extract plain text from a Slate Value (rich text). */
+function richTextToPlain(value: unknown[]): string {
+  return value.map((node) => NodeApi.string(node as any)).join("\n");
+}
+
+/**
+ * Serialize discussions from the editor's in-memory state to the flat
+ * frontmatter format. Walks the Slate tree to find comment mark positions.
+ */
+function serializeDiscussions(
+  editor: ReturnType<typeof createPlateEditor>,
+  discussions: TDiscussion[],
+): SerializedDiscussion[] {
+  const activeDiscussions = discussions.filter((d) => !d.isResolved);
+  if (activeDiscussions.length === 0) return [];
+
+  // Build a map of discussionId → { startBlock, startOffset, endBlock, endOffset }
+  const posMap = new Map<
+    string,
+    {
+      startBlock: number;
+      startOffset: number;
+      endBlock: number;
+      endOffset: number;
+      docContent: string;
+      lastSeenBlock: number;
+    }
+  >();
+
+  const blocks = editor.children;
+
+  for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
+    const block = blocks[blockIdx];
+    // Flatten all text nodes in this block
+    const textNodes = Array.from(NodeApi.texts(block as any));
+    let charOffset = 0;
+
+    for (const [textNode] of textNodes) {
+      const text = (textNode as any).text as string;
+      // Check for comment keys on this text node
+      const keys = Object.keys(textNode).filter(
+        (k) => k.startsWith("comment_") && k !== "comment_draft",
+      );
+
+      for (const key of keys) {
+        const discussionId = key.replace("comment_", "");
+
+        const existing = posMap.get(discussionId);
+        if (!existing) {
+          posMap.set(discussionId, {
+            startBlock: blockIdx,
+            startOffset: charOffset,
+            endBlock: blockIdx,
+            endOffset: charOffset + text.length,
+            docContent: text,
+            lastSeenBlock: blockIdx,
+          });
+        } else {
+          // Extend the range
+          existing.endBlock = blockIdx;
+          existing.endOffset = charOffset + text.length;
+          if (existing.lastSeenBlock === blockIdx) {
+            existing.docContent += text;
+          } else {
+            existing.docContent += "\n" + text;
+            existing.lastSeenBlock = blockIdx;
+          }
+        }
+      }
+
+      charOffset += text.length;
+    }
+  }
+
+  const result: SerializedDiscussion[] = [];
+
+  for (const discussion of activeDiscussions) {
+    const pos = posMap.get(discussion.id);
+
+    if (pos) {
+      // Text-anchored discussion
+      result.push({
+        documentContent: pos.docContent,
+        createdAt: new Date(discussion.createdAt).toISOString(),
+        startBlock: pos.startBlock,
+        startOffset: pos.startOffset,
+        endBlock: pos.endBlock,
+        endOffset: pos.endOffset,
+        comments: discussion.comments.map((c) => ({
+          user: c.userId,
+          content: richTextToPlain(c.contentRich),
+          createdAt: new Date(c.createdAt).toISOString(),
+        })),
+      });
+    } else {
+      // Doc-level discussion (no text anchor)
+      result.push({
+        documentContent: discussion.documentContent ?? "",
+        createdAt: new Date(discussion.createdAt).toISOString(),
+        comments: discussion.comments.map((c) => ({
+          user: c.userId,
+          content: richTextToPlain(c.contentRich),
+          createdAt: new Date(c.createdAt).toISOString(),
+        })),
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Deserialize frontmatter discussions into internal TDiscussion[] and users map.
+ * Generates new IDs for each discussion and comment.
+ */
+function deserializeDiscussions(serialized: SerializedDiscussion[]): {
+  discussions: TDiscussion[];
+  users: Record<string, { id: string; name: string }>;
+  idMap: Map<string, SerializedDiscussion>;
+} {
+  const users: Record<string, { id: string; name: string }> = {};
+  const discussions: TDiscussion[] = [];
+  const idMap = new Map<string, SerializedDiscussion>();
+
+  for (const sd of serialized) {
+    const discussionId = nanoid();
+    idMap.set(discussionId, sd);
+
+    const comments: TComment[] = sd.comments.map((sc) => {
+      // Build user entry
+      if (!users[sc.user]) {
+        users[sc.user] = {
+          id: sc.user,
+          name: sc.user === "me" ? "Me" : sc.user,
+        };
+      }
+
+      return {
+        id: nanoid(),
+        contentRich: [
+          {
+            type: "p",
+            children: [{ text: sc.content }],
+          },
+        ],
+        createdAt: new Date(sc.createdAt),
+        discussionId,
+        isEdited: false,
+        userId: sc.user,
+      };
+    });
+
+    discussions.push({
+      id: discussionId,
+      comments,
+      createdAt: new Date(sd.createdAt),
+      isResolved: false,
+      userId: sd.comments[0]?.user ?? "me",
+      documentContent: sd.documentContent,
+    });
+  }
+
+  return { discussions, users, idMap };
+}
+
+/**
+ * Apply comment marks by directly mutating the Slate value array.
+ * This runs before the editor is mounted in React, so we can't use
+ * editor transforms — we must mutate the node tree directly.
+ */
+function applyCommentMarks(
+  value: any[],
+  discussions: TDiscussion[],
+  idMap: Map<string, SerializedDiscussion>,
+) {
+  for (const discussion of discussions) {
+    const sd = idMap.get(discussion.id);
+    if (!sd) continue;
+
+    // Skip doc-level discussions (no position data)
+    if (
+      sd.startBlock === undefined ||
+      sd.startOffset === undefined ||
+      sd.endBlock === undefined ||
+      sd.endOffset === undefined
+    ) {
+      continue;
+    }
+
+    const commentKey = getCommentKey(discussion.id);
+
+    if (sd.startBlock === sd.endBlock) {
+      applyMarkToBlock(
+        value,
+        sd.startBlock,
+        sd.startOffset,
+        sd.endOffset,
+        commentKey,
+      );
+    } else {
+      // Start block: from startOffset to end
+      applyMarkToBlock(value, sd.startBlock, sd.startOffset, -1, commentKey);
+      // Middle blocks: entire block
+      for (let b = sd.startBlock + 1; b < sd.endBlock; b++) {
+        applyMarkToBlock(value, b, 0, -1, commentKey);
+      }
+      // End block: from 0 to endOffset
+      applyMarkToBlock(value, sd.endBlock, 0, sd.endOffset, commentKey);
+    }
+  }
+}
+
+/**
+ * Directly mutate a block's children to apply a comment mark
+ * in the range [startOffset, endOffset). endOffset of -1 means end of block.
+ */
+function applyMarkToBlock(
+  value: any[],
+  blockIndex: number,
+  startOffset: number,
+  endOffset: number,
+  commentKey: string,
+) {
+  const block = value[blockIndex];
+  if (!block?.children) return;
+
+  const totalLen = block.children.reduce(
+    (sum: number, n: any) => sum + (n.text?.length ?? 0),
+    0,
+  );
+  const actualEnd = endOffset === -1 ? totalLen : endOffset;
+  if (startOffset >= actualEnd) return;
+
+  // Build new children array with the mark applied at the right positions
+  const newChildren: any[] = [];
+  let pos = 0;
+
+  for (const child of block.children) {
+    if (child.text === undefined) {
+      // Non-text node (inline element) — pass through
+      newChildren.push(child);
+      continue;
+    }
+
+    const text: string = child.text;
+    const nodeStart = pos;
+    const nodeEnd = pos + text.length;
+
+    if (nodeEnd <= startOffset || nodeStart >= actualEnd) {
+      // No overlap — keep as-is
+      newChildren.push(child);
+    } else {
+      // Overlap — split into up to 3 parts: before, marked, after
+      const overlapStart = Math.max(startOffset, nodeStart) - nodeStart;
+      const overlapEnd = Math.min(actualEnd, nodeEnd) - nodeStart;
+
+      if (overlapStart > 0) {
+        newChildren.push({ ...child, text: text.slice(0, overlapStart) });
+      }
+      newChildren.push({
+        ...child,
+        text: text.slice(overlapStart, overlapEnd),
+        [commentKey]: true,
+        comment: true,
+      });
+      if (overlapEnd < text.length) {
+        newChildren.push({ ...child, text: text.slice(overlapEnd) });
+      }
+    }
+
+    pos = nodeEnd;
+  }
+
+  block.children = newChildren;
 }
 
 const editorPlugins = [
@@ -64,6 +367,8 @@ const editorPlugins = [
   ...ExitBreakKit,
   ...SlashKit,
   ...FloatingToolbarKit,
+  ...CommentKit,
+  ...DiscussionKit,
 ];
 
 interface EditorPaneParams {
@@ -110,6 +415,12 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     const currentFilePath = props.params.filePath;
     const currentIsExternal = props.params.isExternal ?? false;
 
+    // Cancel any pending metadata auto-save (full save includes metadata)
+    if (metadataPersistTimerRef.current) {
+      clearTimeout(metadataPersistTimerRef.current);
+      metadataPersistTimerRef.current = undefined;
+    }
+
     if (!currentFilePath) {
       // untitled - delegate to saveAs
       await performSaveAs();
@@ -117,6 +428,15 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     }
 
     const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+
+    // Serialize discussions to frontmatter
+    const discussions = editor.getOption(discussionPlugin, "discussions");
+    const serializedDiscussions = serializeDiscussions(editor, discussions);
+    if (serializedDiscussions.length > 0) {
+      metadataRef.current.discussions = serializedDiscussions;
+    } else {
+      delete metadataRef.current.discussions;
+    }
 
     if (currentIsExternal) {
       // external file: preserve original frontmatter behavior
@@ -151,6 +471,12 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   const performSaveAs = useCallback(async () => {
     if (!editor) return;
 
+    // Cancel any pending metadata auto-save
+    if (metadataPersistTimerRef.current) {
+      clearTimeout(metadataPersistTimerRef.current);
+      metadataPersistTimerRef.current = undefined;
+    }
+
     // default to the tab title with .md extension, in the flowrite directory
     const tabTitle = props.params.title || "untitled";
     const defaultName = tabTitle.endsWith(".md") ? tabTitle : `${tabTitle}.md`;
@@ -166,6 +492,15 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
     const isExtPath = !(await isInternalPath(selectedPath));
+
+    // Serialize discussions to frontmatter
+    const discussions = editor.getOption(discussionPlugin, "discussions");
+    const serializedDiscussions = serializeDiscussions(editor, discussions);
+    if (serializedDiscussions.length > 0) {
+      metadataRef.current.discussions = serializedDiscussions;
+    } else {
+      delete metadataRef.current.discussions;
+    }
 
     if (isExtPath) {
       const rawContent = hasOriginalFrontmatterRef.current
@@ -234,9 +569,53 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     forceRender((n) => n + 1);
   }, [editor]);
 
+  // --- metadata auto-persist with debounce ---
+
+  const metadataPersistTimerRef =
+    useRef<ReturnType<typeof setTimeout>>(undefined);
+
+  const doMetadataPersist = useCallback(async () => {
+    if (!editor || !filePath || isExternal || !initialLoadCompleteRef.current)
+      return;
+
+    // Serialize discussions into metadataRef
+    const discussions = editor.getOption(discussionPlugin, "discussions");
+    const serialized = serializeDiscussions(editor, discussions);
+    if (serialized.length > 0) {
+      metadataRef.current.discussions = serialized;
+    } else {
+      delete metadataRef.current.discussions;
+    }
+
+    // Convert metadataRef to YAML string via gray-matter
+    const raw = matter.stringify("", metadataRef.current);
+    // matter.stringify produces "---\n{yaml}\n---\n\n", extract just the YAML
+    const yamlMatch = raw.match(/^---\n([\s\S]*?)\n---/);
+    const yaml = yamlMatch ? yamlMatch[1] : "";
+
+    if (!yaml.trim()) return;
+
+    try {
+      await invoke("write_file_metadata", { path: filePath, yaml });
+    } catch (err) {
+      console.error("failed to auto-save metadata:", err);
+    }
+  }, [editor, filePath, isExternal]);
+
+  const triggerPersistMetadata = useCallback(() => {
+    if (metadataPersistTimerRef.current)
+      clearTimeout(metadataPersistTimerRef.current);
+    metadataPersistTimerRef.current = setTimeout(doMetadataPersist, 500);
+  }, [doMetadataPersist]);
+
   const toggleFullWidth = useCallback(() => {
-    setIsFullWidth((prev) => !prev);
-  }, []);
+    setIsFullWidth((prev) => {
+      const next = !prev;
+      metadataRef.current.fullWidth = next;
+      triggerPersistMetadata();
+      return next;
+    });
+  }, [triggerPersistMetadata]);
 
   const toggleMaximize = useCallback(() => {
     if (editorMaximized) {
@@ -255,6 +634,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       focus: focusEditor,
       toggleMaximize,
       toggleFullWidth,
+      persistMetadata: triggerPersistMetadata,
     });
     return () => unregisterEditor(props.api.id);
   }, [
@@ -264,6 +644,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     focusEditor,
     toggleMaximize,
     toggleFullWidth,
+    triggerPersistMetadata,
   ]);
 
   // load file content and create editor
@@ -294,13 +675,59 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
           hasOriginalFrontmatterRef.current =
             Object.keys(parsed.data).length > 0;
 
+          // Restore fullWidth preference from frontmatter
+          if (parsed.data.fullWidth === true) {
+            setIsFullWidth(true);
+          }
+
+          // Deserialize discussions from frontmatter
+          let discussionState:
+            | {
+                discussions: TDiscussion[];
+                users: Record<string, { id: string; name: string }>;
+                idMap: Map<string, SerializedDiscussion>;
+              }
+            | undefined;
+
+          if (
+            parsed.data.discussions &&
+            Array.isArray(parsed.data.discussions)
+          ) {
+            discussionState = deserializeDiscussions(parsed.data.discussions);
+          }
+
           const ed = createPlateEditor({
             plugins: editorPlugins,
-            value: (editor) =>
-              editor
+            value: (editor) => {
+              const nodes = editor
                 .getApi(MarkdownPlugin)
-                .markdown.deserialize(parsed.content),
+                .markdown.deserialize(parsed.content);
+
+              // Apply comment marks directly into the value before editor mounts
+              if (discussionState) {
+                applyCommentMarks(
+                  nodes,
+                  discussionState.discussions,
+                  discussionState.idMap,
+                );
+              }
+
+              return nodes;
+            },
           });
+
+          // Set discussion data on the editor
+          if (discussionState) {
+            ed.setOption(
+              discussionPlugin,
+              "discussions",
+              discussionState.discussions,
+            );
+            ed.setOption(discussionPlugin, "users", {
+              ...ed.getOption(discussionPlugin, "users"),
+              ...discussionState.users,
+            });
+          }
 
           setEditor(ed);
 
@@ -343,6 +770,46 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       cancelled = true;
     };
   }, [filePath, isExternal]);
+
+  // --- cleanup metadata persist timer on unmount ---
+  useEffect(() => {
+    return () => {
+      if (metadataPersistTimerRef.current) {
+        clearTimeout(metadataPersistTimerRef.current);
+      }
+    };
+  }, []);
+
+  // --- sync active editor to workspace store ---
+  useEffect(() => {
+    if (!editor) return;
+
+    const setActiveEditor = useWorkspaceStore.getState().setActiveEditor;
+
+    // Check if this panel is currently active
+    const checkAndSync = () => {
+      if (props.api.isActive) {
+        setActiveEditor(editor);
+      }
+    };
+
+    checkAndSync();
+
+    const disposable = props.api.onDidActiveChange((event) => {
+      if (event.isActive) {
+        setActiveEditor(editor);
+      }
+    });
+
+    return () => {
+      disposable.dispose();
+      // Clear active editor if this was the active one
+      const current = useWorkspaceStore.getState().activeEditor;
+      if (current === editor) {
+        setActiveEditor(null);
+      }
+    };
+  }, [editor, props.api]);
 
   // --- onChange handler for dirty tracking ---
   const handleEditorChange = useCallback(() => {
@@ -479,7 +946,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             <button
               tabIndex={-1}
               onClick={() => {
-                setIsFullWidth((prev) => !prev);
+                toggleFullWidth();
                 requestAnimationFrame(() => editor.tf.focus());
               }}
               className="flex h-7 w-7 items-center justify-center rounded-md text-foreground/30 transition-colors hover:bg-foreground/8 hover:text-foreground/70"

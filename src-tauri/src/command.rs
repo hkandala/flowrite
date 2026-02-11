@@ -375,6 +375,51 @@ pub async fn rename_file(
 }
 
 // -----------------------------------------
+// metadata-only file update (no git checkpoint)
+// -----------------------------------------
+
+/// Writes only the YAML frontmatter section of an internal file.
+/// Reads the file, replaces (or prepends) the `---` delimited YAML header,
+/// and writes back without triggering a git checkpoint.
+#[tauri::command]
+pub async fn write_file_metadata(
+    app_handle: AppHandle,
+    path: String,
+    yaml: String,
+) -> Result<(), String> {
+    let file_path = resolve_path(&app_handle, &path)?;
+    let content = fs::read_to_string(&file_path)
+        .await
+        .map_err(|e| format!("failed to read {path}: {e}"))?;
+
+    let trimmed_yaml = yaml.trim();
+
+    let new_content = if content.starts_with("---\n") {
+        // find closing --- delimiter and replace everything between
+        if let Some(end) = content[4..].find("\n---\n") {
+            format!("---\n{}\n---\n{}", trimmed_yaml, &content[4 + end + 5..])
+        } else if let Some(end) = content[4..].find("\n---") {
+            // closing --- at end of file (no trailing newline after ---)
+            let after = &content[4 + end + 4..];
+            if after.is_empty() {
+                format!("---\n{}\n---\n", trimmed_yaml)
+            } else {
+                format!("---\n{}\n---\n{}", trimmed_yaml, after)
+            }
+        } else {
+            format!("---\n{}\n---\n{}", trimmed_yaml, &content[4..])
+        }
+    } else {
+        format!("---\n{}\n---\n{}", trimmed_yaml, content)
+    };
+
+    fs::write(&file_path, new_content)
+        .await
+        .map_err(|e| format!("failed to write {path}: {e}"))?;
+    Ok(())
+}
+
+// -----------------------------------------
 // external file commands (files outside ~/flowrite/)
 // -----------------------------------------
 

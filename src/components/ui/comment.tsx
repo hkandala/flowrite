@@ -11,14 +11,13 @@ import {
   format,
 } from "date-fns";
 import {
-  ArrowUpIcon,
   CheckIcon,
   MoreHorizontalIcon,
   PencilIcon,
   TrashIcon,
   XIcon,
 } from "lucide-react";
-import { type Value, KEYS, nanoid, NodeApi } from "platejs";
+import { type Value, HistoryApi, KEYS, nanoid, NodeApi } from "platejs";
 import {
   Plate,
   useEditorPlugin,
@@ -27,7 +26,6 @@ import {
   usePluginOption,
 } from "platejs/react";
 
-import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -36,13 +34,17 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 import { BasicMarksKit } from "@/components/editor/plugins/basic-marks-kit";
 import {
   type TDiscussion,
   discussionPlugin,
 } from "@/components/editor/plugins/discussion-kit";
-
 import { Editor, EditorContainer } from "./editor";
 
 export type TComment = {
@@ -61,92 +63,71 @@ export function Comment(props: {
   index: number;
   setEditingId: React.Dispatch<React.SetStateAction<string | null>>;
   documentContent?: string;
-  showDocumentContent?: boolean;
-  onEditorClick?: () => void;
+  onDiscussionChange?: () => void;
 }) {
   const {
     comment,
     discussionLength,
-    documentContent,
     editingId,
     index,
     setEditingId,
-    showDocumentContent = false,
-    onEditorClick,
+    onDiscussionChange,
   } = props;
 
   const editor = useEditorRef();
   const userInfo = usePluginOption(discussionPlugin, "user", comment.userId);
   const currentUserId = usePluginOption(discussionPlugin, "currentUserId");
 
-  const resolveDiscussion = async (id: string) => {
+  const resolveDiscussion = (id: string) => {
     const updatedDiscussions = editor
       .getOption(discussionPlugin, "discussions")
-      .map((discussion) => {
-        if (discussion.id === id) {
-          return { ...discussion, isResolved: true };
-        }
-        return discussion;
-      });
+      .map((d) => (d.id === id ? { ...d, isResolved: true } : d));
     editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
+    onDiscussionChange?.();
   };
 
-  const removeDiscussion = async (id: string) => {
+  const removeDiscussion = (id: string) => {
     const updatedDiscussions = editor
       .getOption(discussionPlugin, "discussions")
-      .filter((discussion) => discussion.id !== id);
+      .filter((d) => d.id !== id);
     editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
+    onDiscussionChange?.();
   };
 
-  const updateComment = async (input: {
+  const updateComment = (input: {
     id: string;
     contentRich: Value;
     discussionId: string;
-    isEdited: boolean;
   }) => {
     const updatedDiscussions = editor
       .getOption(discussionPlugin, "discussions")
-      .map((discussion) => {
-        if (discussion.id === input.discussionId) {
-          const updatedComments = discussion.comments.map((comment) => {
-            if (comment.id === input.id) {
-              return {
-                ...comment,
-                contentRich: input.contentRich,
-                isEdited: true,
-                updatedAt: new Date(),
-              };
-            }
-            return comment;
-          });
-          return { ...discussion, comments: updatedComments };
-        }
-        return discussion;
+      .map((d) => {
+        if (d.id !== input.discussionId) return d;
+        return {
+          ...d,
+          comments: d.comments.map((c) =>
+            c.id === input.id
+              ? { ...c, contentRich: input.contentRich, isEdited: true }
+              : c,
+          ),
+        };
       });
     editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
+    onDiscussionChange?.();
   };
 
   const { tf } = useEditorPlugin(CommentPlugin);
-
-  // Replace to your own backend or refer to potion
   const isMyComment = currentUserId === comment.userId;
-
   const initialValue = comment.contentRich;
 
   const commentEditor = useCommentEditor(
-    {
-      id: comment.id,
-      value: initialValue,
-    },
+    { id: comment.id, value: initialValue },
     [initialValue],
   );
 
   const onCancel = () => {
     setEditingId(null);
-    commentEditor.tf.replaceNodes(initialValue, {
-      at: [],
-      children: true,
-    });
+    commentEditor.tf.replaceNodes(initialValue, { at: [], children: true });
   };
 
   const onSave = () => {
@@ -154,58 +135,84 @@ export function Comment(props: {
       id: comment.id,
       contentRich: commentEditor.children,
       discussionId: comment.discussionId,
-      isEdited: true,
     });
     setEditingId(null);
   };
 
+  const onEditBlur = React.useCallback(() => {
+    // Use a small delay so clicks on the cancel/save buttons can fire first
+    setTimeout(() => {
+      const content = NodeApi.string({
+        children: commentEditor.children,
+        type: KEYS.p,
+      });
+      const originalContent = NodeApi.string({
+        children: initialValue,
+        type: KEYS.p,
+      });
+      if (!content.trim() || content === originalContent) {
+        onCancel();
+      }
+    }, 150);
+  }, [commentEditor, initialValue, onCancel]);
+
   const onResolveComment = () => {
     void resolveDiscussion(comment.discussionId);
-    tf.comment.unsetMark({ id: comment.discussionId });
+    HistoryApi.withoutSaving(editor, () => {
+      tf.comment.unsetMark({ id: comment.discussionId });
+    });
   };
 
-  const isFirst = index === 0;
-  const isLast = index === discussionLength - 1;
-  const isEditing = editingId && editingId === comment.id;
-
+  const isEditing = editingId === comment.id;
   const [hovering, setHovering] = React.useState(false);
   const [dropdownOpen, setDropdownOpen] = React.useState(false);
+
+  // Handle Escape to cancel editing
+  React.useEffect(() => {
+    if (!isEditing) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onCancel();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isEditing]);
 
   return (
     <div
       onMouseEnter={() => setHovering(true)}
       onMouseLeave={() => setHovering(false)}
     >
-      <div className="relative flex items-center">
-        <Avatar className="size-5">
-          <AvatarImage alt={userInfo?.name} src={userInfo?.avatarUrl} />
-          <AvatarFallback>{userInfo?.name?.[0]}</AvatarFallback>
-        </Avatar>
-        <h4 className="mx-2 font-semibold text-sm leading-none">
-          {/* Replace to your own backend or refer to potion */}
-          {userInfo?.name}
-        </h4>
-
-        <div className="text-muted-foreground/80 text-xs leading-none">
-          <span className="mr-1">
-            {formatCommentDate(new Date(comment.createdAt))}
-          </span>
-          {comment.isEdited && <span>(edited)</span>}
-        </div>
+      <div className="relative flex items-center gap-1.5">
+        <span className="text-[12px] font-medium text-foreground/60">
+          {userInfo?.name?.toLowerCase()}
+        </span>
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="text-[10px] text-muted-foreground/40 cursor-default">
+              {formatCommentDate(new Date(comment.createdAt))}
+              {comment.isEdited ? " (edited)" : ""}
+            </span>
+          </TooltipTrigger>
+          <TooltipContent side="top" sideOffset={4}>
+            {format(new Date(comment.createdAt), "MMM d, yyyy h:mm a")}
+          </TooltipContent>
+        </Tooltip>
 
         {isMyComment && (hovering || dropdownOpen) && (
-          <div className="absolute top-0 right-0 flex space-x-1">
+          <div className="absolute right-0 flex space-x-0.5">
             {index === 0 && (
               <Button
                 variant="ghost"
-                className="h-6 p-1 text-muted-foreground"
-                onClick={onResolveComment}
+                className="h-5 w-5 p-0 text-muted-foreground"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onResolveComment();
+                }}
                 type="button"
               >
-                <CheckIcon className="size-4" />
+                <CheckIcon className="size-3" />
               </Button>
             )}
-
             <CommentMoreDropdown
               onCloseAutoFocus={() => {
                 setTimeout(() => {
@@ -214,10 +221,13 @@ export function Comment(props: {
               }}
               onRemoveComment={() => {
                 if (discussionLength === 1) {
-                  tf.comment.unsetMark({ id: comment.discussionId });
+                  HistoryApi.withoutSaving(editor, () => {
+                    tf.comment.unsetMark({ id: comment.discussionId });
+                  });
                   void removeDiscussion(comment.discussionId);
                 }
               }}
+              onDiscussionChange={onDiscussionChange}
               comment={comment}
               dropdownOpen={dropdownOpen}
               setDropdownOpen={setDropdownOpen}
@@ -227,60 +237,52 @@ export function Comment(props: {
         )}
       </div>
 
-      {isFirst && showDocumentContent && (
-        <div className="relative mt-1 flex pl-8 text-sm text-subtle-foreground">
-          {discussionLength > 1 && (
-            <div className="absolute top-1.25 left-3 h-full w-0.5 shrink-0 bg-muted" />
-          )}
-          <div className="my-px w-0.5 shrink-0 bg-highlight" />
-          {documentContent && <div className="ml-2">{documentContent}</div>}
-        </div>
-      )}
-
-      <div className="relative my-1 pl-6.5">
-        {!isLast && (
-          <div className="absolute top-0 left-3 h-full w-0.5 shrink-0 bg-muted" />
-        )}
+      <div className="mt-1">
         <Plate readOnly={!isEditing} editor={commentEditor}>
-          <EditorContainer variant="comment">
+          <EditorContainer
+            variant="comment"
+            className="border-0 px-0 py-0 has-[[data-slate-editor]:focus]:ring-0"
+          >
             <Editor
               variant="comment"
-              className="w-auto grow"
-              onClick={() => onEditorClick?.()}
+              className="w-auto min-w-0 grow leading-relaxed"
+              onBlur={isEditing ? onEditBlur : undefined}
+              onKeyDown={(e) => {
+                if (isEditing && e.key === "Enter" && !e.shiftKey) {
+                  e.preventDefault();
+                  onSave();
+                }
+              }}
             />
-
-            {isEditing && (
-              <div className="ml-auto flex shrink-0 gap-1">
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  className="size-7"
-                  onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                    e.stopPropagation();
-                    void onCancel();
-                  }}
-                >
-                  <div className="flex size-5 shrink-0 items-center justify-center rounded-[50%] bg-primary/40">
-                    <XIcon className="size-3 stroke-[3px] text-background" />
-                  </div>
-                </Button>
-
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
-                    e.stopPropagation();
-                    void onSave();
-                  }}
-                >
-                  <div className="flex size-5 shrink-0 items-center justify-center rounded-[50%] bg-brand">
-                    <CheckIcon className="size-3 stroke-[3px] text-background" />
-                  </div>
-                </Button>
-              </div>
-            )}
           </EditorContainer>
         </Plate>
+
+        {isEditing && (
+          <div className="flex justify-end gap-1 mt-1">
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                e.stopPropagation();
+                onCancel();
+              }}
+            >
+              <XIcon className="size-3 text-muted-foreground" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
+              className="size-6"
+              onClick={(e: React.MouseEvent<HTMLButtonElement>) => {
+                e.stopPropagation();
+                onSave();
+              }}
+            >
+              <CheckIcon className="size-3 text-foreground" />
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -293,6 +295,7 @@ function CommentMoreDropdown(props: {
   setEditingId: React.Dispatch<React.SetStateAction<string | null>>;
   onCloseAutoFocus?: () => void;
   onRemoveComment?: () => void;
+  onDiscussionChange?: () => void;
 }) {
   const {
     comment,
@@ -301,51 +304,35 @@ function CommentMoreDropdown(props: {
     setEditingId,
     onCloseAutoFocus,
     onRemoveComment,
+    onDiscussionChange,
   } = props;
 
   const editor = useEditorRef();
-
-  const selectedEditCommentRef = React.useRef<boolean>(false);
+  const selectedEditCommentRef = React.useRef(false);
 
   const onDeleteComment = React.useCallback(() => {
-    if (!comment.id)
-      return alert("You are operating too quickly, please try again later.");
-
-    // Find and update the discussion
     const updatedDiscussions = editor
       .getOption(discussionPlugin, "discussions")
-      .map((discussion) => {
-        if (discussion.id !== comment.discussionId) {
-          return discussion;
-        }
-
-        const commentIndex = discussion.comments.findIndex(
-          (c) => c.id === comment.id,
-        );
-        if (commentIndex === -1) {
-          return discussion;
-        }
-
+      .map((d) => {
+        if (d.id !== comment.discussionId) return d;
         return {
-          ...discussion,
-          comments: [
-            ...discussion.comments.slice(0, commentIndex),
-            ...discussion.comments.slice(commentIndex + 1),
-          ],
+          ...d,
+          comments: d.comments.filter((c) => c.id !== comment.id),
         };
       });
-
-    // Save back to session storage
     editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
+    onDiscussionChange?.();
     onRemoveComment?.();
-  }, [comment.discussionId, comment.id, editor, onRemoveComment]);
+  }, [
+    comment.discussionId,
+    comment.id,
+    editor,
+    onRemoveComment,
+    onDiscussionChange,
+  ]);
 
   const onEditComment = React.useCallback(() => {
     selectedEditCommentRef.current = true;
-
-    if (!comment.id)
-      return alert("You are operating too quickly, please try again later.");
-
     setEditingId(comment.id);
   }, [comment.id, setEditingId]);
 
@@ -356,29 +343,28 @@ function CommentMoreDropdown(props: {
       modal={false}
     >
       <DropdownMenuTrigger asChild onClick={(e) => e.stopPropagation()}>
-        <Button variant="ghost" className={cn("h-6 p-1 text-muted-foreground")}>
-          <MoreHorizontalIcon className="size-4" />
+        <Button variant="ghost" className="h-5 w-5 p-0 text-muted-foreground">
+          <MoreHorizontalIcon className="size-3" />
         </Button>
       </DropdownMenuTrigger>
       <DropdownMenuContent
-        className="w-48"
+        className="w-40"
         onCloseAutoFocus={(e) => {
           if (selectedEditCommentRef.current) {
             onCloseAutoFocus?.();
             selectedEditCommentRef.current = false;
           }
-
           return e.preventDefault();
         }}
       >
         <DropdownMenuGroup>
           <DropdownMenuItem onClick={onEditComment}>
-            <PencilIcon className="size-4" />
-            Edit comment
+            <PencilIcon className="size-3.5" />
+            edit
           </DropdownMenuItem>
           <DropdownMenuItem onClick={onDeleteComment}>
-            <TrashIcon className="size-4" />
-            Delete comment
+            <TrashIcon className="size-3.5" />
+            delete
           </DropdownMenuItem>
         </DropdownMenuGroup>
       </DropdownMenuContent>
@@ -390,17 +376,10 @@ const useCommentEditor = (
   options: Omit<CreatePlateEditorOptions, "plugins"> = {},
   deps: any[] = [],
 ) => {
-  const commentEditor = usePlateEditor(
-    {
-      id: "comment",
-      plugins: BasicMarksKit,
-      value: [],
-      ...options,
-    },
+  return usePlateEditor(
+    { id: "comment", plugins: BasicMarksKit, value: [], ...options },
     deps,
   );
-
-  return commentEditor;
 };
 
 export function CommentCreateForm({
@@ -408,19 +387,25 @@ export function CommentCreateForm({
   className,
   discussionId: discussionIdProp,
   focusOnMount = false,
+  placeholder: placeholderProp,
+  onSubmitted,
+  onCancel,
+  onDiscussionChange,
 }: {
   autoFocus?: boolean;
   className?: string;
   discussionId?: string;
   focusOnMount?: boolean;
+  placeholder?: string;
+  onSubmitted?: (discussionId?: string) => void;
+  onCancel?: () => void;
+  onDiscussionChange?: () => void;
 }) {
   const discussions = usePluginOption(discussionPlugin, "discussions");
-
   const editor = useEditorRef();
   const commentId = useCommentId();
   const discussionId = discussionIdProp ?? commentId;
 
-  const userInfo = usePluginOption(discussionPlugin, "currentUser");
   const [commentValue, setCommentValue] = React.useState<Value | undefined>();
   const commentContent = React.useMemo(
     () =>
@@ -429,7 +414,33 @@ export function CommentCreateForm({
         : "",
     [commentValue],
   );
-  const commentEditor = useCommentEditor();
+  const editorId = React.useId();
+  const commentEditor = useCommentEditor({ id: editorId });
+
+  const [isActive, setIsActive] = React.useState(!!onCancel);
+
+  const handleCancel = React.useCallback(() => {
+    if (onCancel) {
+      onCancel();
+    } else {
+      commentEditor.tf.reset();
+      setCommentValue(undefined);
+      setIsActive(false);
+    }
+  }, [onCancel, commentEditor.tf]);
+
+  const handleBlur = React.useCallback(() => {
+    // Use a small delay so clicks on the cancel/submit buttons can fire first
+    setTimeout(() => {
+      const content = NodeApi.string({
+        children: commentEditor.children,
+        type: KEYS.p,
+      });
+      if (!content.trim()) {
+        handleCancel();
+      }
+    }, 150);
+  }, [commentEditor, handleCancel]);
 
   React.useEffect(() => {
     if (commentEditor && focusOnMount) {
@@ -437,16 +448,32 @@ export function CommentCreateForm({
     }
   }, [commentEditor, focusOnMount]);
 
+  // Handle Escape to cancel
+  React.useEffect(() => {
+    if (!isActive && !onCancel) return;
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape") handleCancel();
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, [isActive, onCancel, handleCancel]);
+
   const onAddComment = React.useCallback(async () => {
     if (!commentValue) return;
 
+    const content = NodeApi.string({
+      children: commentValue,
+      type: KEYS.p,
+    });
+    if (!content.trim()) return;
+
     commentEditor.tf.reset();
+    setIsActive(false);
 
     if (discussionId) {
-      // Get existing discussion
       const discussion = discussions.find((d) => d.id === discussionId);
       if (!discussion) {
-        // Mock creating suggestion
+        // New discussion from a known ID (e.g. draft converted)
         const newDiscussion: TDiscussion = {
           id: discussionId,
           comments: [
@@ -463,15 +490,16 @@ export function CommentCreateForm({
           isResolved: false,
           userId: editor.getOption(discussionPlugin, "currentUserId"),
         };
-
         editor.setOption(discussionPlugin, "discussions", [
           ...discussions,
           newDiscussion,
         ]);
+        onDiscussionChange?.();
+        onSubmitted?.();
         return;
       }
 
-      // Create reply comment
+      // Reply to existing discussion
       const comment: TComment = {
         id: nanoid(),
         contentRich: commentValue,
@@ -481,22 +509,18 @@ export function CommentCreateForm({
         userId: editor.getOption(discussionPlugin, "currentUserId"),
       };
 
-      // Add reply to discussion comments
-      const updatedDiscussion = {
-        ...discussion,
-        comments: [...discussion.comments, comment],
-      };
-
-      // Filter out old discussion and add updated one
-      const updatedDiscussions = discussions
-        .filter((d) => d.id !== discussionId)
-        .concat(updatedDiscussion);
-
+      const updatedDiscussions = discussions.map((d) =>
+        d.id === discussionId
+          ? { ...d, comments: [...d.comments, comment] }
+          : d,
+      );
       editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
-
+      onDiscussionChange?.();
+      onSubmitted?.();
       return;
     }
 
+    // Draft comment — convert draft marks to real comment marks
     const commentsNodeEntry = editor
       .getApi(CommentPlugin)
       .comment.nodes({ at: [], isDraft: true });
@@ -508,7 +532,6 @@ export function CommentCreateForm({
       .join("");
 
     const _discussionId = nanoid();
-    // Mock creating new discussion
     const newDiscussion: TDiscussion = {
       id: _discussionId,
       comments: [
@@ -531,69 +554,108 @@ export function CommentCreateForm({
       ...discussions,
       newDiscussion,
     ]);
+    onDiscussionChange?.();
 
     const id = newDiscussion.id;
-
-    commentsNodeEntry.forEach(([, path]) => {
-      editor.tf.setNodes(
-        {
-          [getCommentKey(id)]: true,
-        },
-        { at: path, split: true },
-      );
-      editor.tf.unsetNodes([getDraftCommentKey()], { at: path });
+    HistoryApi.withoutSaving(editor, () => {
+      commentsNodeEntry.forEach(([, path]) => {
+        editor.tf.setNodes(
+          { [getCommentKey(id)]: true },
+          { at: path, split: true },
+        );
+        editor.tf.unsetNodes([getDraftCommentKey()], { at: path });
+      });
     });
-  }, [commentValue, commentEditor.tf, discussionId, editor, discussions]);
+
+    onSubmitted?.(id);
+  }, [
+    commentValue,
+    commentEditor.tf,
+    discussionId,
+    editor,
+    discussions,
+    onSubmitted,
+  ]);
+
+  const currentUserId = usePluginOption(discussionPlugin, "currentUserId");
+  const currentUserInfo = usePluginOption(
+    discussionPlugin,
+    "user",
+    currentUserId,
+  );
+
+  const isReply = discussionId
+    ? discussions.some((d) => d.id === discussionId)
+    : false;
+  const resolvedPlaceholder =
+    placeholderProp ?? (isReply ? "reply..." : "add a comment...");
+  const hasContent = commentContent.trim().length > 0;
+  const showControls = isActive || !!onCancel;
 
   return (
-    <div className={cn("flex w-full", className)}>
-      <div className="mt-2 mr-1 shrink-0">
-        {/* Replace to your own backend or refer to potion */}
-        <Avatar className="size-5">
-          <AvatarImage alt={userInfo?.name} src={userInfo?.avatarUrl} />
-          <AvatarFallback>{userInfo?.name?.[0]}</AvatarFallback>
-        </Avatar>
-      </div>
+    <div className={cn("w-full", className)}>
+      {showControls && isReply && (
+        <div className="flex items-center gap-1.5 mt-0.5 mb-1">
+          <span className="text-[12px] font-medium text-foreground/60">
+            {currentUserInfo?.name?.toLowerCase()}
+          </span>
+        </div>
+      )}
 
-      <div className="relative flex grow gap-2">
-        <Plate
-          onChange={({ value }) => {
-            setCommentValue(value);
-          }}
-          editor={commentEditor}
+      <Plate
+        onChange={({ value }) => setCommentValue(value)}
+        editor={commentEditor}
+      >
+        <EditorContainer
+          variant="comment"
+          className="border-0 px-0 py-0 has-[[data-slate-editor]:focus]:ring-0"
         >
-          <EditorContainer variant="comment">
-            <Editor
-              variant="comment"
-              className="min-h-6.25 grow pt-0.5 pr-8"
-              onKeyDown={(e) => {
-                if (e.key === "Enter" && !e.shiftKey) {
-                  e.preventDefault();
-                  onAddComment();
-                }
-              }}
-              placeholder="Reply..."
-              autoComplete="off"
-              autoFocus={autoFocus}
-            />
-
-            <Button
-              size="icon"
-              variant="ghost"
-              className="absolute right-0.5 bottom-0.5 ml-auto size-6 shrink-0"
-              disabled={commentContent.trim().length === 0}
-              onClick={(e) => {
-                e.stopPropagation();
+          <Editor
+            variant="comment"
+            className="min-h-6 min-w-0 grow leading-relaxed"
+            onFocus={() => setIsActive(true)}
+            onBlur={handleBlur}
+            onKeyDown={(e) => {
+              if (!isActive) setIsActive(true);
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
                 onAddComment();
-              }}
-            >
-              <div className="flex size-6 items-center justify-center rounded-full">
-                <ArrowUpIcon />
-              </div>
-            </Button>
-          </EditorContainer>
-        </Plate>
-      </div>
+              }
+            }}
+            placeholder={resolvedPlaceholder}
+            autoComplete="off"
+            autoFocus={autoFocus}
+          />
+        </EditorContainer>
+      </Plate>
+
+      {showControls && (
+        <div className="flex justify-end gap-1 mt-1">
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-6"
+            onClick={(e) => {
+              e.stopPropagation();
+              handleCancel();
+            }}
+          >
+            <XIcon className="size-3 text-muted-foreground" />
+          </Button>
+          <Button
+            size="icon"
+            variant="ghost"
+            className="size-6"
+            disabled={!hasContent}
+            onClick={(e) => {
+              e.stopPropagation();
+              onAddComment();
+            }}
+          >
+            <CheckIcon className="size-3 text-foreground" />
+          </Button>
+        </div>
+      )}
     </div>
   );
 }
@@ -604,15 +666,8 @@ export const formatCommentDate = (date: Date) => {
   const diffHours = differenceInHours(now, date);
   const diffDays = differenceInDays(now, date);
 
-  if (diffMinutes < 60) {
-    return `${diffMinutes}m`;
-  }
-  if (diffHours < 24) {
-    return `${diffHours}h`;
-  }
-  if (diffDays < 2) {
-    return `${diffDays}d`;
-  }
-
+  if (diffMinutes < 60) return `${diffMinutes}m`;
+  if (diffHours < 24) return `${diffHours}h`;
+  if (diffDays < 2) return `${diffDays}d`;
   return format(date, "MM/dd/yyyy");
 };

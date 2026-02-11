@@ -12,6 +12,7 @@ import { LinkToolbarButton } from "./link-toolbar-button";
 import { MarkToolbarButton } from "./mark-toolbar-button";
 import { ToolbarGroup } from "./toolbar";
 import { TurnIntoToolbarButton } from "./turn-into-toolbar-button";
+import { CommentToolbarButton } from "./comment-toolbar-button";
 
 export function FloatingToolbarButtons() {
   const readOnly = useEditorReadOnly();
@@ -50,6 +51,9 @@ export function FloatingToolbarButtons() {
             </MarkToolbarButton>
 
             <LinkToolbarButton />
+          </ToolbarGroup>
+          <ToolbarGroup>
+            <CommentToolbarButton />
           </ToolbarGroup>
         </>
       )}
