@@ -207,6 +207,7 @@ function FileTreeItemRow({
         <input
           {...item.getRenameInputProps()}
           className="file-tree-rename-input"
+          onFocus={(e) => e.currentTarget.select()}
           onKeyDown={(e) => {
             if (e.key === "Enter") {
               e.preventDefault();
@@ -422,9 +423,9 @@ export function FileTreePane() {
         );
         itemCacheRef.current.delete(itemId);
 
-        // Validate name - treat empty or unchanged "untitled" as cancellation
+        // Validate name
         let name = newName.trim();
-        if (!name || name === "untitled") {
+        if (!name) {
           try {
             tree.getItemInstance(parentId).updateCachedChildrenIds(
               existingChildren.filter((id) => id !== itemId),
@@ -819,6 +820,17 @@ export function FileTreePane() {
     // cancel any active inline creation
     creatingItemRef.current = null;
 
+    // invalidate all folders in headless-tree's internal cache before clearing ours
+    for (const [id, item] of itemCacheRef.current) {
+      if (item.isDir) {
+        try {
+          tree.getItemInstance(id).invalidateChildrenIds();
+        } catch {
+          /* item may not be loaded */
+        }
+      }
+    }
+
     childrenCacheRef.current.clear();
     const rootItem = itemCacheRef.current.get(ROOT_ID);
     itemCacheRef.current.clear();
@@ -828,13 +840,6 @@ export function FileTreePane() {
     setAllRecursiveItems([]);
     setIsRefreshing(true);
     setRootLoaded(false);
-
-    try {
-      const rootInstance = tree.getItemInstance(ROOT_ID);
-      rootInstance.invalidateChildrenIds();
-    } catch {
-      /* root may not exist yet */
-    }
 
     setState((prev) => ({
       ...prev,
@@ -928,17 +933,42 @@ export function FileTreePane() {
     try {
       await invoke(isDir ? "delete_dir" : "delete_file", { path: itemPath });
 
-      // close editor tab if the deleted file is open
-      if (!isDir) {
-        closeFile(itemPath);
-      }
+      // close editor tabs for the deleted file/folder
+      closeFile(itemPath);
 
       const parentPath = itemPath.includes("/")
         ? itemPath.substring(0, itemPath.lastIndexOf("/"))
         : "";
       const parentId = parentPath || ROOT_ID;
+
+      // clear caches for the deleted item and all descendants
+      if (isDir) {
+        const prefix = itemPath + "/";
+        // invalidate headless-tree's internal cache for deleted folders
+        for (const [key, item] of itemCacheRef.current) {
+          if ((key === itemPath || key.startsWith(prefix)) && item.isDir) {
+            try {
+              tree.getItemInstance(key).invalidateChildrenIds();
+            } catch {
+              /* item may not be loaded */
+            }
+          }
+        }
+        for (const key of childrenCacheRef.current.keys()) {
+          if (key === itemPath || key.startsWith(prefix)) {
+            childrenCacheRef.current.delete(key);
+          }
+        }
+        for (const key of itemCacheRef.current.keys()) {
+          if (key === itemPath || key.startsWith(prefix)) {
+            itemCacheRef.current.delete(key);
+          }
+        }
+      } else {
+        itemCacheRef.current.delete(itemPath);
+      }
+
       childrenCacheRef.current.delete(parentId);
-      itemCacheRef.current.delete(itemPath);
       tree.getItemInstance(parentId).invalidateChildrenIds();
     } catch (e) {
       toast.error(`delete failed: ${e}`);
@@ -1012,7 +1042,7 @@ export function FileTreePane() {
       htOnKeyDown?.(e);
 
       // Space: toggle folder expand or open file
-      if (e.code === "Space" && !e.defaultPrevented) {
+      if (e.code === "Space" && !e.defaultPrevented && !state.renamingItem) {
         e.preventDefault();
         const focusedId = state.focusedItem;
         if (!focusedId) return;
