@@ -16,7 +16,7 @@ use crate::{
         WORKSPACE_WINDOW_MIN_WIDTH, WORKSPACE_WINDOW_WIDTH,
     },
     nb,
-    utils::{resolve_path, split_path},
+    utils::resolve_path,
 };
 
 #[derive(Serialize)]
@@ -242,19 +242,7 @@ async fn list_dir_inner(
 pub async fn delete_dir(app_handle: AppHandle, path: String) -> Result<(), String> {
     log::info!("deleting directory: {path}");
 
-    let dir_path = resolve_path(&app_handle, &path)?;
-
-    fs::remove_dir_all(&dir_path)
-        .await
-        .map_err(|e| format!("failed to delete directory '{path}': {e}"))?;
-
-    // reconcile nb index after directory deletion
-    let app_handle_clone = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = nb::reconcile_index(&app_handle_clone).await {
-            log::warn!("nb index reconciliation failed after delete_dir: {}", e);
-        }
-    });
+    nb::delete(&app_handle, &path).await?;
 
     log::info!("deleted directory: {path}");
 
@@ -269,20 +257,7 @@ pub async fn rename_dir(
 ) -> Result<(), String> {
     log::info!("renaming directory: {old_path} -> {new_path}");
 
-    let old_dir = resolve_path(&app_handle, &old_path)?;
-    let new_dir = resolve_path(&app_handle, &new_path)?;
-
-    fs::rename(&old_dir, &new_dir)
-        .await
-        .map_err(|e| format!("failed to rename directory '{old_path}' to '{new_path}': {e}"))?;
-
-    // reconcile nb index after directory rename
-    let app_handle_clone = app_handle.clone();
-    tauri::async_runtime::spawn(async move {
-        if let Err(e) = nb::reconcile_index(&app_handle_clone).await {
-            log::warn!("nb index reconciliation failed after rename_dir: {}", e);
-        }
-    });
+    nb::rename(&app_handle, &old_path, &new_path).await?;
 
     log::info!("renamed directory: {old_path} -> {new_path}");
 
@@ -295,7 +270,7 @@ pub async fn create_file(
     path: String,
     content: Option<String>,
 ) -> Result<FSEntry, String> {
-    log::info!("creating file via nb: {path}");
+    log::info!("creating file: {path}");
 
     let file_path = resolve_path(&app_handle, &path)?;
 
@@ -304,17 +279,6 @@ pub async fn create_file(
         return Err(format!("file '{path}' already exists"));
     }
 
-    let (folder, _) = split_path(&path);
-
-    // ensure parent folders exist (filesystem operation)
-    if !folder.is_empty() {
-        let folder_path = resolve_path(&app_handle, &folder)?;
-        fs::create_dir_all(&folder_path)
-            .await
-            .map_err(|e| format!("failed to create folders: {e}"))?;
-    }
-
-    // use nb to create file with optional initial content
     let initial_content = content.unwrap_or_default();
     nb::create_file(&app_handle, &path, &initial_content).await?;
 
@@ -339,7 +303,7 @@ pub async fn create_file(
         .map_err(|e| format!("failed to convert modification time: {e}"))?
         .as_millis() as u64;
 
-    log::info!("created file via nb: {path}");
+    log::info!("created file: {path}");
 
     Ok(FSEntry {
         path,
@@ -352,11 +316,11 @@ pub async fn create_file(
 
 #[tauri::command]
 pub async fn read_file(app_handle: AppHandle, path: String) -> Result<String, String> {
-    log::info!("reading file via nb: {path}");
+    log::info!("reading file: {path}");
 
     let content = nb::read_file(&app_handle, &path).await?;
 
-    log::info!("read file via nb: {path}");
+    log::info!("read file: {path}");
 
     Ok(content)
 }
@@ -367,22 +331,22 @@ pub async fn update_file(
     path: String,
     content: String,
 ) -> Result<(), String> {
-    log::info!("updating file via nb: {path}");
+    log::info!("updating file: {path}");
 
     nb::update_file(&app_handle, &path, &content).await?;
 
-    log::info!("updated file via nb: {path}");
+    log::info!("updated file: {path}");
 
     Ok(())
 }
 
 #[tauri::command]
 pub async fn delete_file(app_handle: AppHandle, path: String) -> Result<(), String> {
-    log::info!("deleting file via nb: {path}");
+    log::info!("deleting file: {path}");
 
-    nb::delete_file(&app_handle, &path).await?;
+    nb::delete(&app_handle, &path).await?;
 
-    log::info!("deleted file via nb: {path}");
+    log::info!("deleted file: {path}");
 
     Ok(())
 }
@@ -393,14 +357,11 @@ pub async fn rename_file(
     old_path: String,
     new_path: String,
 ) -> Result<(), String> {
-    log::info!("renaming file via nb: {old_path} -> {new_path}");
+    log::info!("renaming file: {old_path} -> {new_path}");
 
-    // extract just filename for rename
-    let new_filename = new_path.rsplit('/').next().unwrap_or(&new_path);
+    nb::rename(&app_handle, &old_path, &new_path).await?;
 
-    nb::rename_file(&app_handle, &old_path, new_filename).await?;
-
-    log::info!("renamed file via nb: {old_path} -> {new_path}");
+    log::info!("renamed file: {old_path} -> {new_path}");
 
     Ok(())
 }

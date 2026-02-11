@@ -21,16 +21,3 @@ pub fn get_base_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
 pub fn resolve_path(app_handle: &AppHandle, relative_path: &str) -> Result<PathBuf, String> {
     Ok(get_base_dir(app_handle)?.join(relative_path))
 }
-
-// -----------------------------------------
-// path helpers
-// -----------------------------------------
-
-/// splits a path like "notes/2024/01/note.md" into ("notes/2024/01", "note.md")
-pub fn split_path(path: &str) -> (String, String) {
-    if let Some(pos) = path.rfind('/') {
-        (path[..pos].to_string(), path[pos + 1..].to_string())
-    } else {
-        ("".to_string(), path.to_string())
-    }
-}

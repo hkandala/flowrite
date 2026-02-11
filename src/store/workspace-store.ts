@@ -24,6 +24,7 @@ interface WorkspaceActions {
   openFile: (filePath: string) => void;
   openFileToSide: (filePath: string) => void;
   closeFile: (filePath: string) => void;
+  renameFile: (oldPath: string, newPath: string) => void;
   toggleLeftPanel: () => void;
   toggleRightPanel: () => void;
   setLeftPanelWidth: (width: number) => void;
@@ -127,10 +128,59 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     const { dockviewApi } = get();
     if (!dockviewApi) return;
 
+    const prefix = filePath + "/";
+    const panelsToClose = dockviewApi.panels.filter((panel) => {
+      const panelPath = (panel.params as Record<string, unknown>)?.filePath as
+        | string
+        | undefined;
+      if (!panelPath) return false;
+      return panelPath === filePath || panelPath.startsWith(prefix);
+    });
+    for (const panel of panelsToClose) {
+      panel.api.close();
+    }
+  },
+
+  renameFile: (oldPath, newPath) => {
+    const { dockviewApi, activeFilePath } = get();
+    if (!dockviewApi) return;
+
+    const oldPrefix = oldPath + "/";
+
     for (const panel of dockviewApi.panels) {
-      if ((panel.params as Record<string, unknown>)?.filePath === filePath) {
-        panel.api.close();
-        return;
+      const panelPath = (panel.params as Record<string, unknown>)?.filePath as
+        | string
+        | undefined;
+      if (!panelPath) continue;
+
+      let updatedPath: string | null = null;
+      if (panelPath === oldPath) {
+        updatedPath = newPath;
+      } else if (panelPath.startsWith(oldPrefix)) {
+        updatedPath = newPath + panelPath.slice(oldPath.length);
+      }
+
+      if (updatedPath) {
+        const fileName = updatedPath.split("/").pop() || updatedPath;
+        const displayName = fileName.endsWith(".md")
+          ? fileName.slice(0, -3)
+          : fileName;
+        panel.api.updateParameters({
+          filePath: updatedPath,
+          title: displayName,
+        });
+        panel.api.setTitle(displayName);
+      }
+    }
+
+    // update activeFilePath if affected
+    if (activeFilePath) {
+      if (activeFilePath === oldPath) {
+        set({ activeFilePath: newPath });
+      } else if (activeFilePath.startsWith(oldPrefix)) {
+        set({
+          activeFilePath: newPath + activeFilePath.slice(oldPath.length),
+        });
       }
     }
   },

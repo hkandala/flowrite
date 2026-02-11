@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use tauri::{AppHandle, Manager};
 use tauri_plugin_shell::ShellExt;
 use tokio::fs;
+use trash::TrashContext;
 
 use crate::constants::{NB_DATA_DIR_NAME, NB_RC_FILE_NAME};
 use crate::utils::get_base_dir;
@@ -256,8 +257,20 @@ pub async fn git_checkpoint(app_handle: &AppHandle, message: &str) -> Result<(),
     Ok(())
 }
 
+/// run nb index reconcile + git checkpoint in a background task
+fn reconcile_and_checkpoint(app_handle: &AppHandle, message: String) {
+    let handle = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = reconcile_index(&handle).await {
+            log::warn!("nb index reconciliation failed: {}", e);
+        }
+        if let Err(e) = git_checkpoint(&handle, &message).await {
+            log::warn!("nb git checkpoint failed: {}", e);
+        }
+    });
+}
+
 /// create a new note file with initial content
-/// uses direct fs write because nb's --content flag can't handle long markdown
 pub async fn create_file(app_handle: &AppHandle, path: &str, content: &str) -> Result<(), String> {
     let base_dir = get_base_dir(app_handle)?;
     let file_path = base_dir.join(path);
@@ -274,11 +287,8 @@ pub async fn create_file(app_handle: &AppHandle, path: &str, content: &str) -> R
         .await
         .map_err(|e| format!("failed to create file {}: {e}", path))?;
 
-    // reconcile nb index to track the new file (adds to .index)
-    reconcile_index(app_handle).await?;
-
-    // git checkpoint to commit the new file
-    git_checkpoint(app_handle, &format!("[nb] Add: {}", path)).await?;
+    // reconcile + checkpoint in background
+    reconcile_and_checkpoint(app_handle, format!("[nb] Add: {}", path));
 
     Ok(())
 }
@@ -293,7 +303,6 @@ pub async fn read_file(app_handle: &AppHandle, path: &str) -> Result<String, Str
 }
 
 /// update a note file with new content
-/// uses direct fs write because nb's --content flag can't handle long markdown
 pub async fn update_file(app_handle: &AppHandle, path: &str, content: &str) -> Result<(), String> {
     let base_dir = get_base_dir(app_handle)?;
     let file_path = base_dir.join(path);
@@ -303,25 +312,56 @@ pub async fn update_file(app_handle: &AppHandle, path: &str, content: &str) -> R
         .await
         .map_err(|e| format!("failed to update file {}: {e}", path))?;
 
-    // git checkpoint to commit the edit (no index change needed for existing files)
-    git_checkpoint(app_handle, &format!("[nb] Edit: {}", path)).await?;
+    // checkpoint in background (no index change needed for existing files)
+    let handle = app_handle.clone();
+    let msg = format!("[nb] Edit: {}", path);
+    tauri::async_runtime::spawn(async move {
+        if let Err(e) = git_checkpoint(&handle, &msg).await {
+            log::warn!("nb git checkpoint failed: {}", e);
+        }
+    });
 
     Ok(())
 }
 
-/// delete a note file
-pub async fn delete_file(app_handle: &AppHandle, path: &str) -> Result<(), String> {
-    run_nb_command(app_handle, &[path, "delete", "--force"]).await?;
+/// delete a file or directory (moves to Trash)
+pub async fn delete(app_handle: &AppHandle, path: &str) -> Result<(), String> {
+    let base_dir = get_base_dir(app_handle)?;
+    let full_path = base_dir.join(path);
+
+    let path_clone = full_path.clone();
+    tokio::task::spawn_blocking(move || {
+        use trash::macos::{DeleteMethod, TrashContextExtMacos};
+        let mut ctx = TrashContext::default();
+        ctx.set_delete_method(DeleteMethod::NsFileManager);
+        ctx.delete(&path_clone)
+    })
+    .await
+    .map_err(|e| format!("failed to trash '{}': {e}", path))?
+    .map_err(|e| format!("failed to trash '{}': {e}", path))?;
+
+    // reconcile + checkpoint in background
+    reconcile_and_checkpoint(app_handle, format!("[nb] Delete: {}", path));
+
     Ok(())
 }
 
-/// rename a note file
-pub async fn rename_file(
-    app_handle: &AppHandle,
-    old_path: &str,
-    new_filename: &str,
-) -> Result<(), String> {
-    run_nb_command(app_handle, &[old_path, "rename", new_filename, "--force"]).await?;
+/// rename/move a file or directory
+pub async fn rename(app_handle: &AppHandle, old_path: &str, new_path: &str) -> Result<(), String> {
+    let base_dir = get_base_dir(app_handle)?;
+    let old_resolved = base_dir.join(old_path);
+    let new_resolved = base_dir.join(new_path);
+
+    fs::rename(&old_resolved, &new_resolved)
+        .await
+        .map_err(|e| format!("failed to rename '{}' to '{}': {e}", old_path, new_path))?;
+
+    // reconcile + checkpoint in background
+    reconcile_and_checkpoint(
+        app_handle,
+        format!("[nb] Rename: {} -> {}", old_path, new_path),
+    );
+
     Ok(())
 }
 

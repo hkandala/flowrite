@@ -240,14 +240,14 @@ export function FileTreePane() {
   const openFile = useWorkspaceStore((s) => s.openFile);
   const openFileToSide = useWorkspaceStore((s) => s.openFileToSide);
   const closeFile = useWorkspaceStore((s) => s.closeFile);
+  const renameFile = useWorkspaceStore((s) => s.renameFile);
   const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
   const requestEditorTabFocus = useWorkspaceStore(
     (s) => s.requestEditorTabFocus,
   );
 
-  // cache: directory path -> children ids
-  const childrenCacheRef = useRef<Map<string, string[]>>(new Map());
-  // cache: item id -> FileTreeItem
+  // item metadata cache (name, isDir) — used by fetchItem, context menus, filter
+  // headless-tree manages its own children cache internally; we don't duplicate it
   const itemCacheRef = useRef<Map<string, FileTreeItem>>(new Map());
 
   // local ref for programmatic focus
@@ -297,20 +297,11 @@ export function FileTreePane() {
     });
   }, []);
 
-  // fetch children for a directory and populate caches
+  // fetch children for a directory — always reads from filesystem
+  // headless-tree caches the result internally and only calls this
+  // again when invalidateChildrenIds() is used
   const fetchChildren = useCallback(
     async (itemId: string): Promise<string[]> => {
-      const cached = childrenCacheRef.current.get(itemId);
-      if (cached) {
-        // strip stale temp items from cache if no creation is active
-        if (!creatingItemRef.current && cached.some((id) => id.startsWith(TEMP_ITEM_PREFIX))) {
-          const filtered = cached.filter((id) => !id.startsWith(TEMP_ITEM_PREFIX));
-          childrenCacheRef.current.set(itemId, filtered);
-          return filtered;
-        }
-        return cached;
-      }
-
       const dirPath = itemId === ROOT_ID ? "" : itemId;
 
       try {
@@ -327,7 +318,6 @@ export function FileTreePane() {
           });
         }
 
-        childrenCacheRef.current.set(itemId, childIds);
         if (itemId === ROOT_ID) setRootLoaded(true);
         return childIds;
       } catch {
@@ -413,26 +403,15 @@ export function FileTreePane() {
         const creating = creatingItemRef.current;
         if (!creating) return;
         creatingItemRef.current = null;
-
-        // Clean up temp item from caches
-        const parentId = creating.parentPath || ROOT_ID;
-        const existingChildren = childrenCacheRef.current.get(parentId) || [];
-        childrenCacheRef.current.set(
-          parentId,
-          existingChildren.filter((id) => id !== itemId),
-        );
         itemCacheRef.current.delete(itemId);
+
+        const parentId = creating.parentPath || ROOT_ID;
 
         // Validate name
         let name = newName.trim();
         if (!name) {
-          try {
-            tree.getItemInstance(parentId).updateCachedChildrenIds(
-              existingChildren.filter((id) => id !== itemId),
-            );
-          } catch {
-            /* parent may not be loaded */
-          }
+          // empty name = cancel, refresh parent to remove temp item
+          tree.getItemInstance(parentId).invalidateChildrenIds();
           return;
         }
 
@@ -446,18 +425,6 @@ export function FileTreePane() {
           ? `${creating.parentPath}/${name}`
           : name;
 
-        // Check for duplicates
-        const siblings = childrenCacheRef.current.get(parentId) || [];
-        const duplicate = siblings.some((id) => {
-          const siblingItem = itemCacheRef.current.get(id);
-          return siblingItem?.name.toLowerCase() === name.toLowerCase();
-        });
-        if (duplicate) {
-          toast.error(`"${name}" already exists`);
-          tree.getItemInstance(parentId).invalidateChildrenIds();
-          return;
-        }
-
         // Create the file/folder
         try {
           if (creating.type === "folder") {
@@ -466,8 +433,7 @@ export function FileTreePane() {
             await invoke("create_file", { path: newPath });
           }
 
-          // Refresh parent cache to pick up the new real item
-          childrenCacheRef.current.delete(parentId);
+          // Refresh parent to pick up the new real item
           tree.getItemInstance(parentId).invalidateChildrenIds();
 
           // Open file in editor (only for files)
@@ -494,21 +460,15 @@ export function FileTreePane() {
       const newPath = parentPath ? `${parentPath}/${finalName}` : finalName;
 
       try {
-        if (oldData.isDir) {
-          await invoke("rename_dir", { oldPath: itemId, newPath });
-        } else {
-          await invoke("rename_file", { oldPath: itemId, newPath: finalName });
-        }
+        const renameCmd = oldData.isDir ? "rename_dir" : "rename_file";
+        await invoke(renameCmd, { oldPath: itemId, newPath });
 
         itemCacheRef.current.delete(itemId);
-        itemCacheRef.current.set(newPath, {
-          id: newPath,
-          name: finalName,
-          isDir: oldData.isDir,
-        });
+
+        // update open editor tabs to reflect the new path
+        renameFile(itemId, newPath);
 
         const parentId = parentPath || ROOT_ID;
-        childrenCacheRef.current.delete(parentId);
         try {
           tree.getItemInstance(parentId).invalidateChildrenIds();
         } catch {
@@ -516,7 +476,6 @@ export function FileTreePane() {
         }
       } catch (e) {
         toast.error(`rename failed: ${e}`);
-        itemCacheRef.current.set(itemId, oldData);
       }
     },
     canDrag: (items) => items.every((i) => i.getId() !== ROOT_ID),
@@ -548,20 +507,16 @@ export function FileTreePane() {
         const sourceParent = item.getParent();
         if (sourceParent) parentsToInvalidate.add(sourceParent.getId());
 
-        const isDir = item.isFolder();
         try {
-          if (isDir) {
-            await invoke("rename_dir", { oldPath, newPath });
-          } else {
-            await invoke("rename_file", { oldPath, newPath: name });
-          }
+          const renameCmd = item.isFolder() ? "rename_dir" : "rename_file";
+          await invoke(renameCmd, { oldPath, newPath });
+          renameFile(oldPath, newPath);
         } catch (e) {
-          console.error("Move failed:", e);
+          toast.error(`move failed: ${e}`);
         }
       }
 
       for (const parentId of parentsToInvalidate) {
-        childrenCacheRef.current.delete(parentId);
         try {
           tree.getItemInstance(parentId).invalidateChildrenIds();
         } catch {
@@ -572,7 +527,6 @@ export function FileTreePane() {
   });
 
   // clean up temp items when renaming ends (catches Esc, blur, all abort paths)
-  // this handles the race condition where async data loader overwrites our manual cleanup
   useEffect(() => {
     if (state.renamingItem) return; // still renaming, nothing to clean up
 
@@ -581,13 +535,10 @@ export function FileTreePane() {
 
     // renaming ended while a creation was active — clean up the temp item
     creatingItemRef.current = null;
-    const parentId = creating.parentPath || ROOT_ID;
-    const children = childrenCacheRef.current.get(parentId) || [];
-    const filtered = children.filter((id) => id !== creating.tempId);
-    childrenCacheRef.current.set(parentId, filtered);
     itemCacheRef.current.delete(creating.tempId);
+    const parentId = creating.parentPath || ROOT_ID;
     try {
-      tree.getItemInstance(parentId).updateCachedChildrenIds(filtered);
+      tree.getItemInstance(parentId).invalidateChildrenIds();
     } catch {
       /* parent may not be loaded */
     }
@@ -726,6 +677,7 @@ export function FileTreePane() {
         });
       }
 
+      // build parent→children map and pre-populate headless-tree's cache
       const childrenMap = new Map<string, string[]>();
       for (const entry of entries) {
         const parentPath =
@@ -752,14 +704,19 @@ export function FileTreePane() {
       }
 
       for (const [parentId, children] of childrenMap) {
-        childrenCacheRef.current.set(parentId, children);
+        try {
+          tree.getItemInstance(parentId).updateCachedChildrenIds(children);
+        } catch {
+          /* item instance may not exist yet */
+        }
       }
     } catch (err) {
       console.error("failed to fetch recursive tree:", err);
+      toast.error(`failed to fetch recursive tree: ${err}`);
     } finally {
       setIsLoadingRecursive(false);
     }
-  }, [allRecursiveItems.length, isLoadingRecursive]);
+  }, [allRecursiveItems.length, isLoadingRecursive, tree]);
 
   // ---- handlers ----
 
@@ -807,6 +764,7 @@ export function FileTreePane() {
       }));
     } catch (e) {
       console.error("expand all failed:", e);
+      toast.error(`expand all failed: ${e}`);
     } finally {
       setIsExpandingAll(false);
     }
@@ -817,10 +775,9 @@ export function FileTreePane() {
   }, [tree]);
 
   const handleRefresh = useCallback(() => {
-    // cancel any active inline creation
     creatingItemRef.current = null;
 
-    // invalidate all folders in headless-tree's internal cache before clearing ours
+    // invalidate all folders in headless-tree's internal cache
     for (const [id, item] of itemCacheRef.current) {
       if (item.isDir) {
         try {
@@ -831,7 +788,7 @@ export function FileTreePane() {
       }
     }
 
-    childrenCacheRef.current.clear();
+    // clear item metadata so everything is re-fetched fresh
     const rootItem = itemCacheRef.current.get(ROOT_ID);
     itemCacheRef.current.clear();
     if (rootItem) {
@@ -856,7 +813,6 @@ export function FileTreePane() {
       const tempId = `${TEMP_ITEM_PREFIX}${Date.now()}`;
       creatingItemRef.current = { parentPath, type, tempId };
 
-      // add temp item to our own caches
       itemCacheRef.current.set(tempId, {
         id: tempId,
         name: "untitled",
@@ -864,27 +820,20 @@ export function FileTreePane() {
       });
       const parentId = parentPath || ROOT_ID;
 
-      // ensure parent children are loaded
-      if (!childrenCacheRef.current.has(parentId)) {
-        await fetchChildren(parentId);
-      }
-
-      // add temp item to children cache BEFORE expanding
-      // this ensures the data loader returns children with the temp item
-      const existingChildren = childrenCacheRef.current.get(parentId) || [];
+      // fetch current children from filesystem
+      const existingChildren = await fetchChildren(parentId);
       const newChildren = [...existingChildren, tempId];
-      childrenCacheRef.current.set(parentId, newChildren);
 
-      // expand parent folder
+      // expand parent folder and inject temp item
+      // set children cache BEFORE expanding so the expand rebuild finds
+      // cached data and doesn't trigger a competing async fetch
       try {
         const parentInstance = tree.getItemInstance(parentId);
+        parentInstance.updateCachedChildrenIds(newChildren);
         if (!parentInstance.isExpanded()) {
           parentInstance.expand();
         }
-        // update the tree's cached children to include temp item
-        parentInstance.updateCachedChildrenIds(newChildren);
       } catch {
-        // fallback: expand via setState
         setState((prev) => ({
           ...prev,
           expandedItems: [
@@ -917,13 +866,10 @@ export function FileTreePane() {
 
   // ---- delete handler ----
 
-  const handleDeleteItem = useCallback(
-    (itemPath: string, isDir: boolean) => {
-      const name = itemPath.split("/").pop() || itemPath;
-      setPendingDelete({ path: itemPath, name, isDir });
-    },
-    [],
-  );
+  const handleDeleteItem = useCallback((itemPath: string, isDir: boolean) => {
+    const name = itemPath.split("/").pop() || itemPath;
+    setPendingDelete({ path: itemPath, name, isDir });
+  }, []);
 
   const confirmDelete = useCallback(async () => {
     if (!pendingDelete) return;
@@ -941,14 +887,9 @@ export function FileTreePane() {
         : "";
       const parentId = parentPath || ROOT_ID;
 
-      // clear caches for the deleted item and all descendants
+      // clean up item metadata for deleted items
       if (isDir) {
         const prefix = itemPath + "/";
-        for (const key of childrenCacheRef.current.keys()) {
-          if (key === itemPath || key.startsWith(prefix)) {
-            childrenCacheRef.current.delete(key);
-          }
-        }
         for (const key of itemCacheRef.current.keys()) {
           if (key === itemPath || key.startsWith(prefix)) {
             itemCacheRef.current.delete(key);
@@ -958,7 +899,17 @@ export function FileTreePane() {
         itemCacheRef.current.delete(itemPath);
       }
 
-      childrenCacheRef.current.delete(parentId);
+      // invalidate the deleted folder so headless-tree won't serve
+      // stale children if a folder with the same path is created later
+      if (isDir) {
+        try {
+          tree.getItemInstance(itemPath).invalidateChildrenIds();
+        } catch {
+          /* item may not be loaded */
+        }
+      }
+
+      // refresh parent to remove the deleted item from the tree
       tree.getItemInstance(parentId).invalidateChildrenIds();
     } catch (e) {
       toast.error(`delete failed: ${e}`);

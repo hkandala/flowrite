@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
 import matter from "gray-matter";
+import { toast } from "sonner";
 import { MarkdownPlugin } from "@platejs/markdown";
 
 import { cn } from "@/lib/utils";
@@ -115,6 +116,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
         } catch (err) {
           if (cancelled) return;
           console.error("failed to load file:", err);
+          toast.error(`failed to load file: ${err}`);
           setEditor(createPlateEditor({ plugins: editorPlugins }));
         } finally {
           if (!cancelled) setIsLoading(false);
@@ -146,7 +148,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
         invoke("update_file", {
           path: filePath,
           content: rawContent,
-        }).catch((err) => console.error("failed to save file:", err));
+        }).catch((err) => {
+          console.error("failed to save file:", err);
+          toast.error(`failed to save file: ${err}`);
+        });
       }
     };
 

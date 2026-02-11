@@ -33,6 +33,7 @@ once_cell = "1.19"
 objc = "0.2"
 cocoa = "0.26"
 notify = "7"
+trash = "5.2.5"
 
 [features]
 cargo-clippy = []

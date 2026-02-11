@@ -17,7 +17,10 @@ async function getAbsolutePath(relativePath: string): Promise<string> {
   if (!cachedHomeDir) {
     cachedHomeDir = await homeDir();
   }
-  return `${cachedHomeDir}flowrite/${relativePath}`;
+  const home = cachedHomeDir.endsWith("/")
+    ? cachedHomeDir
+    : cachedHomeDir + "/";
+  return `${home}flowrite/${relativePath}`;
 }
 
 function getItemName(path: string): string {
