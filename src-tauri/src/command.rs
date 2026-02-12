@@ -394,20 +394,20 @@ pub async fn write_file_metadata(
 
     let trimmed_yaml = yaml.trim();
 
-    let new_content = if content.starts_with("---\n") {
+    let new_content = if let Some(stripped) = content.strip_prefix("---\n") {
         // find closing --- delimiter and replace everything between
-        if let Some(end) = content[4..].find("\n---\n") {
-            format!("---\n{}\n---\n{}", trimmed_yaml, &content[4 + end + 5..])
-        } else if let Some(end) = content[4..].find("\n---") {
+        if let Some(end) = stripped.find("\n---\n") {
+            format!("---\n{}\n---\n{}", trimmed_yaml, &stripped[end + 5..])
+        } else if let Some(end) = stripped.find("\n---") {
             // closing --- at end of file (no trailing newline after ---)
-            let after = &content[4 + end + 4..];
+            let after = &stripped[end + 4..];
             if after.is_empty() {
                 format!("---\n{}\n---\n", trimmed_yaml)
             } else {
                 format!("---\n{}\n---\n{}", trimmed_yaml, after)
             }
         } else {
-            format!("---\n{}\n---\n{}", trimmed_yaml, &content[4..])
+            format!("---\n{}\n---\n{}", trimmed_yaml, stripped)
         }
     } else {
         format!("---\n{}\n---\n{}", trimmed_yaml, content)

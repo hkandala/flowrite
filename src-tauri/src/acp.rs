@@ -432,6 +432,7 @@ pub async fn acp_set_mode(
     result
 }
 
+#[allow(clippy::type_complexity)]
 async fn get_agent_command_tx(
     state: &State<'_, AcpState>,
     agent_id: &str,
