@@ -114,15 +114,15 @@ export function AgentSettingsModal({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-3xl max-h-[85vh] overflow-hidden p-0">
+      <DialogContent className="max-w-3xl h-[85vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-2">
-          <DialogTitle>agent settings</DialogTitle>
+          <DialogTitle>acp agent providers</DialogTitle>
           <DialogDescription>
-            configure registry agents or add your own custom ACP command.
+            configure or add your ACP agents
           </DialogDescription>
         </DialogHeader>
 
-        <div className="px-6 pb-6 overflow-y-auto space-y-5">
+        <div className="flex-1 min-h-0 px-6 pb-6 overflow-y-auto space-y-5">
           <div className="space-y-4">
             {agents.map((agent) => (
               <div
@@ -135,10 +135,12 @@ export function AgentSettingsModal({
                       <img
                         src={agent.icon}
                         alt={`${agent.name} icon`}
-                        className="h-8 w-8 rounded-sm border border-border/70 bg-background/70 shrink-0"
+                        loading="lazy"
+                        referrerPolicy="no-referrer"
+                        className="h-8 w-8 rounded-sm border border-border/70 bg-transparent object-contain p-0.5 shrink-0 dark:invert dark:brightness-125"
                       />
                     ) : (
-                      <div className="h-8 w-8 rounded-sm border border-border/70 bg-background/70 shrink-0" />
+                      <div className="h-8 w-8 rounded-sm border border-border/70 bg-transparent shrink-0" />
                     )}
                     <div className="min-w-0 space-y-1">
                       <div className="text-sm text-foreground font-medium truncate">
@@ -158,41 +160,6 @@ export function AgentSettingsModal({
                     <Trash2 className="h-3.5 w-3.5" />
                   </Button>
                 </div>
-
-                {!agent.commandConfigured &&
-                  (agent.downloadUrl || agent.repository) && (
-                    <p className="text-xs text-amber-500">
-                      binary agent: install locally and set its command path.
-                      {agent.downloadUrl && (
-                        <>
-                          {" "}
-                          <a
-                            className="underline"
-                            href={agent.downloadUrl}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            download archive
-                          </a>
-                          .
-                        </>
-                      )}
-                      {agent.repository && (
-                        <>
-                          {" "}
-                          <a
-                            className="underline"
-                            href={agent.repository}
-                            target="_blank"
-                            rel="noreferrer"
-                          >
-                            repository
-                          </a>
-                          .
-                        </>
-                      )}
-                    </p>
-                  )}
 
                 <div className="space-y-2">
                   <label className="block text-xs text-muted-foreground">
@@ -227,11 +194,49 @@ export function AgentSettingsModal({
                     onBlur={() => void commitAgentEnv(agent.id)}
                   />
                 </div>
+
+                {!agent.commandConfigured &&
+                  (agent.downloadUrl || agent.repository) && (
+                    <p className="text-xs text-amber-500">
+                      {agent.downloadUrl && (
+                        <>
+                          {" "}
+                          <a
+                            className="underline"
+                            href={agent.downloadUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            download archive
+                          </a>
+                          , extract it,
+                        </>
+                      )}
+                      {!agent.downloadUrl && " install it locally,"} then set{" "}
+                      <code className="font-mono text-[11px]">command</code>{" "}
+                      above to the local binary path.
+                      {agent.repository && (
+                        <>
+                          {" "}
+                          see{" "}
+                          <a
+                            className="underline"
+                            href={agent.repository}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            repository
+                          </a>{" "}
+                          for setup details.
+                        </>
+                      )}
+                    </p>
+                  )}
               </div>
             ))}
           </div>
 
-          <div className="rounded-lg border border-border/70 bg-background/40 p-3 space-y-3">
+          <div className="rounded-lg border border-border/70 bg-muted/20 p-3 space-y-3">
             <h3 className="text-sm text-foreground font-medium">
               add custom agent
             </h3>

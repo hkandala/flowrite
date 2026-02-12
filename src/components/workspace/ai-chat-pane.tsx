@@ -1,7 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { MessageCircle, Settings } from "lucide-react";
+import { ChevronDown, SlidersHorizontal, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { InputGroup } from "@/components/ui/input-group";
 import { useAgentStore } from "@/store/agent-store";
 
 import { AgentSettingsModal } from "./chat/agent-settings-modal";
@@ -31,6 +38,11 @@ export function AiChatPane() {
     () => agents.filter((agent) => agent.commandConfigured),
     [agents],
   );
+  const selectedAgent = useMemo(
+    () =>
+      configuredAgents.find((agent) => agent.id === selectedAgentId) ?? null,
+    [configuredAgents, selectedAgentId],
+  );
 
   useEffect(() => {
     if (!listRef.current) return;
@@ -43,47 +55,53 @@ export function AiChatPane() {
   if (!activeSessionId) {
     return (
       <div className="h-full flex flex-col p-3 text-muted-foreground">
-        <div className="flex-1 flex flex-col items-center justify-center gap-5 text-muted-foreground rounded-xl border border-foreground/8 px-6">
+        <div className="flex-1 flex flex-col items-center justify-center gap-5 text-muted-foreground px-6">
           <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
-            <MessageCircle className="h-5 w-5" />
+            <Sparkles className="h-5 w-5" />
           </div>
-          <span className="text-sm">start an ai agent session</span>
+          <span className="text-sm">talk to ai agent</span>
 
-          <div className="w-full max-w-xs space-y-2">
-            <label className="block text-xs text-muted-foreground">
-              configured agents
-            </label>
-            <select
-              value={selectedAgentId ?? ""}
-              className="w-full h-9 rounded-md border border-input bg-transparent px-2 text-sm text-foreground"
-              onChange={(event) => selectAgent(event.target.value || null)}
-            >
-              <option value="">select an agent...</option>
-              {configuredAgents.map((agent) => (
-                <option key={agent.id} value={agent.id}>
-                  {agent.name}
-                </option>
-              ))}
-            </select>
-          </div>
+          <div className="w-full max-w-74">
+            <InputGroup className="bg-transparent dark:bg-transparent">
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    type="button"
+                    variant="ghost"
+                    className="flex-1 justify-between rounded-none border-0 shadow-none h-8 text-sm text-foreground"
+                  >
+                    <span className="truncate">
+                      {selectedAgent?.name ?? "select an agent..."}
+                    </span>
+                    <ChevronDown className="h-3.5 w-3.5" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent
+                  align="start"
+                  className="min-w-(--radix-dropdown-menu-trigger-width)"
+                >
+                  {configuredAgents.length === 0 ? (
+                    <DropdownMenuItem disabled>
+                      no configured agents
+                    </DropdownMenuItem>
+                  ) : (
+                    configuredAgents.map((agent) => (
+                      <DropdownMenuItem
+                        key={agent.id}
+                        onClick={() => selectAgent(agent.id)}
+                      >
+                        {agent.name}
+                      </DropdownMenuItem>
+                    ))
+                  )}
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </InputGroup>
 
-          {connectionError && (
-            <p className="text-xs text-red-500 text-center max-w-xs">
-              {connectionError}
-            </p>
-          )}
-
-          <div className="flex items-center gap-2">
             <Button
               type="button"
-              variant="outline"
-              size="icon-sm"
-              onClick={() => setSettingsOpen(true)}
-            >
-              <Settings className="h-3.5 w-3.5" />
-            </Button>
-            <Button
-              type="button"
+              variant="glass"
+              className="mt-2 w-full"
               disabled={
                 !selectedAgentId ||
                 configuredAgents.length === 0 ||
@@ -98,7 +116,22 @@ export function AiChatPane() {
                   : "start session"}
             </Button>
           </div>
+
+          {connectionError && (
+            <p className="text-xs text-red-500 text-center max-w-xs">
+              {connectionError}
+            </p>
+          )}
         </div>
+
+        <Button
+          type="button"
+          variant="ghost"
+          className="mb-4 w-fit self-center"
+          onClick={() => setSettingsOpen(true)}
+        >
+          configure acp agents
+        </Button>
 
         <AgentSettingsModal
           open={settingsOpen}

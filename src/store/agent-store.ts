@@ -271,14 +271,39 @@ const deriveRegistryAgentCommand = (agent: RegistryAgent) => {
   };
 };
 
-const toAgentConfig = (agent: RegistryAgent): AgentConfig => {
+const blobToDataUrl = (blob: Blob): Promise<string> =>
+  new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result));
+    reader.onerror = () => reject(new Error("failed to read icon blob"));
+    reader.readAsDataURL(blob);
+  });
+
+const resolveAgentIcon = async (
+  iconUrl?: string,
+): Promise<string | undefined> => {
+  if (!iconUrl) return undefined;
+
+  try {
+    const response = await fetch(iconUrl);
+    if (!response.ok) {
+      return iconUrl;
+    }
+    const blob = await response.blob();
+    return await blobToDataUrl(blob);
+  } catch {
+    return iconUrl;
+  }
+};
+
+const toAgentConfig = async (agent: RegistryAgent): Promise<AgentConfig> => {
   const derived = deriveRegistryAgentCommand(agent);
   return {
     id: agent.id,
     name: agent.name,
     version: agent.version,
     description: agent.description,
-    icon: agent.icon,
+    icon: await resolveAgentIcon(agent.icon),
     repository: agent.repository,
     source: "registry",
     command: derived.command,
@@ -286,6 +311,52 @@ const toAgentConfig = (agent: RegistryAgent): AgentConfig => {
     commandConfigured: derived.commandConfigured,
     downloadUrl: derived.downloadUrl,
   };
+};
+
+const fetchRegistryAgents = async (): Promise<RegistryAgent[]> => {
+  const response = await fetch(ACP_REGISTRY_URL, {
+    headers: {
+      Accept: "application/json",
+    },
+  });
+  if (!response.ok) {
+    throw new Error(
+      `failed to fetch ACP registry: ${response.status} ${response.statusText}`,
+    );
+  }
+
+  const registry = (await response.json()) as RegistryResponse;
+  return registry.agents ?? [];
+};
+
+const mergeRegistryMetadata = async (
+  savedAgents: AgentConfig[],
+): Promise<AgentConfig[]> => {
+  const registryAgents = await fetchRegistryAgents();
+  const registryConfigs = await Promise.all(registryAgents.map(toAgentConfig));
+  const registryById = new Map(
+    registryConfigs.map((registryAgent) => [registryAgent.id, registryAgent]),
+  );
+
+  return savedAgents.map((savedAgent) => {
+    if (savedAgent.source !== "registry") {
+      return savedAgent;
+    }
+
+    const metadata = registryById.get(savedAgent.id);
+    if (!metadata) {
+      return savedAgent;
+    }
+
+    return {
+      ...savedAgent,
+      version: metadata.version,
+      description: metadata.description,
+      icon: metadata.icon ?? savedAgent.icon,
+      repository: metadata.repository,
+      downloadUrl: metadata.downloadUrl,
+    };
+  });
 };
 
 const persistAgentSettings = async (
@@ -349,31 +420,41 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       const savedAgents = await store.get<AgentConfig[]>(AGENT_CONFIGS_KEY);
 
       if (savedLoaded && Array.isArray(savedAgents)) {
+        const shouldBackfillRegistryMetadata = savedAgents.some(
+          (agent) =>
+            agent.source === "registry" &&
+            (!agent.icon ||
+              agent.icon.trim().length === 0 ||
+              agent.icon.startsWith("http://") ||
+              agent.icon.startsWith("https://")),
+        );
+
+        let nextAgents = savedAgents;
+        if (shouldBackfillRegistryMetadata) {
+          try {
+            nextAgents = await mergeRegistryMetadata(savedAgents);
+            await persistAgentSettings(nextAgents, true);
+          } catch {
+            nextAgents = savedAgents;
+          }
+        }
+
         const firstConfigured =
-          savedAgents.find((agent) => agent.commandConfigured)?.id ??
-          savedAgents[0]?.id ??
+          nextAgents.find((agent) => agent.commandConfigured)?.id ??
+          nextAgents[0]?.id ??
           null;
         set({
-          agents: savedAgents,
+          agents: nextAgents,
           registryLoaded: true,
           selectedAgentId: get().selectedAgentId ?? firstConfigured,
         });
         return;
       }
 
-      const response = await fetch(ACP_REGISTRY_URL, {
-        headers: {
-          Accept: "application/json",
-        },
-      });
-      if (!response.ok) {
-        throw new Error(
-          `failed to fetch ACP registry: ${response.status} ${response.statusText}`,
-        );
-      }
-
-      const registry = (await response.json()) as RegistryResponse;
-      const registryAgents = (registry.agents ?? []).map(toAgentConfig);
+      const registryAgentsRaw = await fetchRegistryAgents();
+      const registryAgents = await Promise.all(
+        registryAgentsRaw.map(toAgentConfig),
+      );
       const selectedAgentId =
         registryAgents.find((agent) => agent.commandConfigured)?.id ??
         registryAgents[0]?.id ??
