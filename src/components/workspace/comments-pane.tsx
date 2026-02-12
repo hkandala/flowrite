@@ -177,7 +177,7 @@ function CommentsList() {
       <div className="flex items-center justify-between pr-6">
         <Badge
           variant="outline"
-          className="h-7 text-[11px] font-normal text-muted-foreground bg-transparent"
+          className="h-7 font-normal text-muted-foreground bg-transparent"
         >
           {activeDiscussions.length} comment
           {activeDiscussions.length !== 1 ? "s" : ""}
