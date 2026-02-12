@@ -35,6 +35,8 @@ objc = "0.2"
 cocoa = "0.26"
 notify = "7"
 trash = "5.2.5"
+sacp = "10.1"
+sacp-tokio = "10.1"
 
 [features]
 cargo-clippy = []

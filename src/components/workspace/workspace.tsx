@@ -12,6 +12,7 @@ import {
   toggleActiveEditorMaximize,
   toggleActiveEditorFullWidth,
 } from "@/store/workspace-store";
+import { useAgentStore } from "@/store/agent-store";
 import { openFileFromAbsolutePath } from "@/lib/utils";
 
 const HOTKEY_OPTIONS = {
@@ -35,6 +36,7 @@ function Workspace() {
   const requestQuitConfirmation = useWorkspaceStore(
     (s) => s.requestQuitConfirmation,
   );
+  const initAgents = useAgentStore((s) => s.initAgents);
 
   // focus the webview on mount so keyboard shortcuts work immediately
   // in new windows without requiring a click first
@@ -44,6 +46,10 @@ function Workspace() {
     document.body.style.outline = "none";
     document.body.focus();
   }, []);
+
+  useEffect(() => {
+    void initAgents();
+  }, [initAgents]);
 
   // --- keyboard shortcuts ---
 

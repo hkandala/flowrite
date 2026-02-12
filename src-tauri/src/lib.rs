@@ -20,6 +20,7 @@ static INITIAL_WINDOW_CREATED: AtomicBool = AtomicBool::new(false);
 /// before the frontend is ready to handle them (cold launch).
 pub(crate) struct PendingFiles(pub Mutex<Vec<String>>);
 
+mod acp;
 mod command;
 mod constants;
 mod file_watcher;
@@ -37,6 +38,7 @@ pub fn run() {
                 .level_for("notify", log::LevelFilter::Warn)
                 .build(),
         )
+        .manage(acp::AcpState::default())
         .manage(PendingFiles(Mutex::new(Vec::new())))
         .setup(setup_app)
         .invoke_handler(tauri::generate_handler![
@@ -58,6 +60,12 @@ pub fn run() {
             command::update_external_file,
             command::delete_external_file,
             command::rename_external_file,
+            acp::acp_connect,
+            acp::acp_new_session,
+            acp::acp_prompt,
+            acp::acp_respond_permission,
+            acp::acp_cancel,
+            acp::acp_set_mode,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
