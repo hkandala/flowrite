@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import { ChevronDown, SlidersHorizontal, Sparkles } from "lucide-react";
+import { useMemo, useState } from "react";
+import { ChevronDown, Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -32,8 +32,6 @@ export function AiChatPane() {
   const connect = useAgentStore((s) => s.connect);
   const respondPermission = useAgentStore((s) => s.respondPermission);
 
-  const listRef = useRef<HTMLDivElement | null>(null);
-
   const configuredAgents = useMemo(
     () => agents.filter((agent) => agent.commandConfigured),
     [agents],
@@ -43,14 +41,6 @@ export function AiChatPane() {
       configuredAgents.find((agent) => agent.id === selectedAgentId) ?? null,
     [configuredAgents, selectedAgentId],
   );
-
-  useEffect(() => {
-    if (!listRef.current) return;
-    listRef.current.scrollTo({
-      top: listRef.current.scrollHeight,
-      behavior: "smooth",
-    });
-  }, [messages.length, isResponding, pendingPermission]);
 
   if (!activeSessionId) {
     return (
@@ -145,10 +135,7 @@ export function AiChatPane() {
     <div className="h-full flex flex-col">
       <ChatHeader onOpenSettings={() => setSettingsOpen(true)} />
 
-      <div
-        ref={listRef}
-        className="flex-1 min-h-0 overflow-y-auto px-3 py-3 space-y-3"
-      >
+      <div className="flex-1 min-h-0 overflow-y-auto py-3 pr-5 space-y-3">
         {messages.map((message) => (
           <ChatMessage key={message.id} message={message} />
         ))}

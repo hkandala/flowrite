@@ -36,7 +36,7 @@ export function RightPanel() {
           });
         }
       }}
-      className="h-full flex flex-col pt-4 pl-3"
+      className="h-full flex flex-col pt-4 pl-2"
     >
       <TabsList>
         <TabsTrigger value="chat">

@@ -168,12 +168,15 @@ function PanelResizeHandle({
   return (
     <div
       className={cn(
-        "absolute top-0 bottom-0 z-10 w-1.5 cursor-col-resize",
-        "hover:bg-foreground/10 transition-colors",
-        side === "right" ? "-right-px" : "-left-px",
+        "absolute top-0 bottom-0 z-10 w-1 cursor-col-resize group",
+        side === "right"
+          ? "right-0 translate-x-1/2"
+          : "left-0 -translate-x-1/2",
       )}
       onMouseDown={handleMouseDown}
-    />
+    >
+      <div className="absolute inset-y-0 left-1/2 w-px -translate-x-1/2 bg-transparent group-hover:bg-foreground/15 transition-colors" />
+    </div>
   );
 }
 

@@ -14,6 +14,31 @@ import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { useAgentStore } from "@/store/agent-store";
 
+function envToText(env: Record<string, string>): string {
+  return Object.entries(env)
+    .map(([key, value]) => `${key}=${value}`)
+    .join("\n");
+}
+
+function textToEnv(text: string): Record<string, string> | null {
+  const env: Record<string, string> = {};
+  const lines = text.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (!trimmed) continue;
+    const eqIndex = trimmed.indexOf("=");
+    if (eqIndex === -1 || eqIndex === 0) {
+      toast.error("invalid env format", {
+        description: `line ${i + 1}: expected KEY=value, got "${trimmed}"`,
+      });
+      return null;
+    }
+    const key = trimmed.slice(0, eqIndex).trim();
+    env[key] = trimmed.slice(eqIndex + 1);
+  }
+  return env;
+}
+
 interface AgentSettingsModalProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -35,7 +60,7 @@ export function AgentSettingsModal({
 
   const [customName, setCustomName] = useState("");
   const [customCommand, setCustomCommand] = useState("");
-  const [customEnv, setCustomEnv] = useState("{}");
+  const [customEnv, setCustomEnv] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -43,7 +68,7 @@ export function AgentSettingsModal({
     const nextEnvs: Record<string, string> = {};
     for (const agent of agents) {
       nextCommands[agent.id] = agent.command;
-      nextEnvs[agent.id] = JSON.stringify(agent.env ?? {}, null, 2);
+      nextEnvs[agent.id] = envToText(agent.env ?? {});
     }
     setCommandDrafts(nextCommands);
     setEnvDrafts(nextEnvs);
@@ -58,23 +83,9 @@ export function AgentSettingsModal({
   };
 
   const commitAgentEnv = async (agentId: string) => {
-    const raw = (envDrafts[agentId] ?? "").trim();
-    if (!raw) {
-      await updateAgent(agentId, { env: {} });
-      return;
-    }
-    try {
-      const parsed = JSON.parse(raw) as Record<string, unknown>;
-      const env: Record<string, string> = {};
-      for (const [key, value] of Object.entries(parsed)) {
-        env[key] = String(value);
-      }
-      await updateAgent(agentId, { env });
-    } catch {
-      toast.error("invalid env JSON", {
-        description: "environment must be a valid JSON object",
-      });
-    }
+    const env = textToEnv(envDrafts[agentId] ?? "");
+    if (env === null) return;
+    await updateAgent(agentId, { env });
   };
 
   const handleAddCustomAgent = async () => {
@@ -83,21 +94,8 @@ export function AgentSettingsModal({
       return;
     }
 
-    let env: Record<string, string> = {};
-    const raw = customEnv.trim();
-    if (raw) {
-      try {
-        const parsed = JSON.parse(raw) as Record<string, unknown>;
-        env = Object.fromEntries(
-          Object.entries(parsed).map(([key, value]) => [key, String(value)]),
-        );
-      } catch {
-        toast.error("invalid env JSON", {
-          description: "custom env must be a valid JSON object",
-        });
-        return;
-      }
-    }
+    const env = textToEnv(customEnv);
+    if (env === null) return;
 
     await addAgent({
       name: customName.trim() || "custom agent",
@@ -109,7 +107,7 @@ export function AgentSettingsModal({
 
     setCustomName("");
     setCustomCommand("");
-    setCustomEnv("{}");
+    setCustomEnv("");
   };
 
   return (
@@ -179,12 +177,13 @@ export function AgentSettingsModal({
 
                 <div className="space-y-2">
                   <label className="block text-xs text-muted-foreground">
-                    env (JSON)
+                    env (KEY=value, one per line)
                   </label>
                   <Textarea
-                    rows={4}
-                    value={envDrafts[agent.id] ?? "{}"}
-                    className="font-mono text-xs"
+                    rows={2}
+                    value={envDrafts[agent.id] ?? ""}
+                    className="font-mono text-xs whitespace-nowrap overflow-x-auto placeholder:text-muted-foreground/50"
+                    placeholder={"API_KEY=sk-...\nANOTHER_VAR=value"}
                     onChange={(event) =>
                       setEnvDrafts((drafts) => ({
                         ...drafts,
@@ -265,12 +264,13 @@ export function AgentSettingsModal({
 
             <div className="space-y-1.5">
               <label className="block text-xs text-muted-foreground">
-                env (JSON)
+                env (KEY=value, one per line)
               </label>
               <Textarea
-                rows={4}
+                rows={2}
                 value={customEnv}
-                className="font-mono text-xs"
+                className="font-mono text-xs whitespace-nowrap overflow-x-auto placeholder:text-muted-foreground/50"
+                placeholder={"API_KEY=sk-...\nANOTHER_VAR=value"}
                 onChange={(event) => setCustomEnv(event.target.value)}
               />
             </div>

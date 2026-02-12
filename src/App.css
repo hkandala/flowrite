@@ -3,6 +3,15 @@
 @plugin "tailwind-scrollbar-hide";
 @import "tw-animate-css";
 
+@keyframes shimmer {
+  0% {
+    background-position: 200% center;
+  }
+  100% {
+    background-position: -200% center;
+  }
+}
+
 @custom-variant dark (&:is(.dark *));
 
 @font-face {

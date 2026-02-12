@@ -66,6 +66,10 @@ export interface PlanEntry {
   status: PlanEntryStatus;
 }
 
+export type MessageSegment =
+  | { type: "text"; content: string }
+  | { type: "toolCall"; toolCallId: string };
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -73,6 +77,7 @@ export interface ChatMessage {
   thinking: string;
   toolCalls: ToolCall[];
   plan: PlanEntry[];
+  segments: MessageSegment[];
   isStreaming: boolean;
 }
 
@@ -652,6 +657,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       thinking: "",
       toolCalls: [],
       plan: [],
+      segments: [],
       isStreaming: false,
     };
     const assistantMessage: ChatMessage = {
@@ -661,6 +667,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       thinking: "",
       toolCalls: [],
       plan: [],
+      segments: [],
       isStreaming: true,
     };
 
@@ -679,10 +686,23 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             messages: updateAssistantMessage(
               current.messages,
               assistantMessageId,
-              (message) => ({
-                ...message,
-                content: `${message.content}${event.data.text}`,
-              }),
+              (message) => {
+                const segments = [...message.segments];
+                const last = segments[segments.length - 1];
+                if (last?.type === "text") {
+                  segments[segments.length - 1] = {
+                    ...last,
+                    content: last.content + event.data.text,
+                  };
+                } else {
+                  segments.push({ type: "text", content: event.data.text });
+                }
+                return {
+                  ...message,
+                  content: `${message.content}${event.data.text}`,
+                  segments,
+                };
+              },
             ),
           }));
           break;
@@ -722,9 +742,19 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                         : toolCall,
                     )
                   : [...message.toolCalls, nextToolCall];
+                const segments = existing
+                  ? message.segments
+                  : [
+                      ...message.segments,
+                      {
+                        type: "toolCall" as const,
+                        toolCallId: event.data.toolCallId,
+                      },
+                    ];
                 return {
                   ...message,
                   toolCalls: nextToolCalls,
+                  segments,
                 };
               },
             ),

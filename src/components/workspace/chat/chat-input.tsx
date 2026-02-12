@@ -1,20 +1,18 @@
-import {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  type KeyboardEvent,
-} from "react";
+import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
 import { ArrowUp, ChevronDown, Square } from "lucide-react";
+import TextareaAutosize from "react-textarea-autosize";
 
-import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  InputGroup,
+  InputGroupAddon,
+  InputGroupButton,
+} from "@/components/ui/input-group";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/store/agent-store";
 
@@ -32,7 +30,6 @@ export function ChatInput() {
   const sendPrompt = useAgentStore((s) => s.sendPrompt);
   const cancelPrompt = useAgentStore((s) => s.cancelPrompt);
 
-  const textareaRef = useRef<HTMLTextAreaElement | null>(null);
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
 
   const disabled = connectionStatus !== "connected";
@@ -60,25 +57,8 @@ export function ChatInput() {
     setSelectedCommandIndex(0);
   }, [slashQuery, filteredCommands.length]);
 
-  useEffect(() => {
-    const textarea = textareaRef.current;
-    if (!textarea) return;
-
-    textarea.style.height = "0px";
-    const lineHeight = Number.parseInt(
-      globalThis.getComputedStyle(textarea).lineHeight || "20",
-      10,
-    );
-    const maxHeight = lineHeight * MAX_ROWS + 16;
-    const nextHeight = Math.min(textarea.scrollHeight, maxHeight);
-    textarea.style.height = `${nextHeight}px`;
-    textarea.style.overflowY =
-      textarea.scrollHeight > maxHeight ? "auto" : "hidden";
-  }, [inputText]);
-
   const applySlashCommand = (commandName: string) => {
     setInputText(`/${commandName} `);
-    textareaRef.current?.focus();
   };
 
   const submitPrompt = () => {
@@ -123,46 +103,7 @@ export function ChatInput() {
   const currentMode = availableModes.find((mode) => mode.id === currentModeId);
 
   return (
-    <div className="shrink-0 border-t border-border/60 p-3 space-y-2">
-      <div className="flex items-center justify-between gap-2">
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={disabled}
-            >
-              <span className="truncate max-w-[12rem]">
-                {currentMode?.name ?? "mode"}
-              </span>
-              <ChevronDown className="h-3.5 w-3.5" />
-            </Button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="min-w-52">
-            {availableModes.length === 0 ? (
-              <DropdownMenuItem disabled>no modes available</DropdownMenuItem>
-            ) : (
-              availableModes.map((mode) => (
-                <DropdownMenuItem
-                  key={mode.id}
-                  onClick={() => setCurrentModeId(mode.id)}
-                >
-                  <div className="flex flex-col gap-0.5 min-w-0">
-                    <span className="truncate">{mode.name}</span>
-                    {mode.description && (
-                      <span className="text-xs text-muted-foreground truncate">
-                        {mode.description}
-                      </span>
-                    )}
-                  </div>
-                </DropdownMenuItem>
-              ))
-            )}
-          </DropdownMenuContent>
-        </DropdownMenu>
-      </div>
-
+    <div className="shrink-0 pr-3 pb-4">
       <div className="relative">
         {showSlashMenu && (
           <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 rounded-md border border-border/70 bg-background shadow-lg max-h-48 overflow-y-auto z-20 p-1">
@@ -190,38 +131,73 @@ export function ChatInput() {
           </div>
         )}
 
-        <div className="relative">
-          <Textarea
-            id="agent-chat-input"
-            ref={textareaRef}
+        <InputGroup className="bg-transparent dark:bg-transparent rounded-xl">
+          <TextareaAutosize
+            data-slot="input-group-control"
+            className="field-sizing-content min-h-15 w-full resize-none rounded-md bg-transparent p-4 text-sm transition-[color,box-shadow] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
             value={inputText}
             disabled={disabled}
             placeholder={
               disabled
                 ? "connect an agent to start chatting..."
-                : "Type a message..."
+                : "type a message..."
             }
-            className="min-h-[44px] max-h-52 pr-12 resize-none"
+            maxRows={MAX_ROWS}
             onChange={(event) => setInputText(event.target.value)}
             onKeyDown={handleKeyDown}
           />
-          <Button
-            type="button"
-            size="icon-sm"
-            variant={isResponding ? "destructive" : "default"}
-            disabled={disabled}
-            className="absolute right-1.5 bottom-1.5"
-            onClick={() =>
-              isResponding ? void cancelPrompt() : submitPrompt()
-            }
-          >
-            {isResponding ? (
-              <Square className="h-3.5 w-3.5" />
-            ) : (
-              <ArrowUp className="h-3.5 w-3.5" />
-            )}
-          </Button>
-        </div>
+          <InputGroupAddon align="block-end">
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <InputGroupButton size="sm" variant="ghost" disabled={disabled}>
+                  <span className="truncate max-w-48">
+                    {currentMode?.name ?? "mode"}
+                  </span>
+                  <ChevronDown className="h-3.5 w-3.5" />
+                </InputGroupButton>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="start" className="min-w-52 max-w-72">
+                {availableModes.length === 0 ? (
+                  <DropdownMenuItem disabled>
+                    no modes available
+                  </DropdownMenuItem>
+                ) : (
+                  availableModes.map((mode) => (
+                    <DropdownMenuItem
+                      key={mode.id}
+                      onClick={() => setCurrentModeId(mode.id)}
+                    >
+                      <div className="flex flex-col gap-0.5 min-w-0 overflow-hidden">
+                        <span className="truncate">{mode.name}</span>
+                        {mode.description && (
+                          <span className="text-xs text-muted-foreground line-clamp-2">
+                            {mode.description}
+                          </span>
+                        )}
+                      </div>
+                    </DropdownMenuItem>
+                  ))
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+
+            <InputGroupButton
+              className="ml-auto"
+              size="icon-sm"
+              variant="default"
+              disabled={disabled}
+              onClick={() =>
+                isResponding ? void cancelPrompt() : submitPrompt()
+              }
+            >
+              {isResponding ? (
+                <Square className="h-3.5 w-3.5" />
+              ) : (
+                <ArrowUp className="h-3.5 w-3.5" />
+              )}
+            </InputGroupButton>
+          </InputGroupAddon>
+        </InputGroup>
       </div>
     </div>
   );
