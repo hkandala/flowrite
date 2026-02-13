@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Plus, SlidersHorizontal } from "lucide-react";
+import { Unplug, SlidersHorizontal } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useAgentStore } from "@/store/agent-store";
@@ -44,10 +44,10 @@ export function ChatHeader() {
             type="button"
             variant="ghost"
             size="icon-sm"
-            title="new chat"
+            title="disconnect"
             onClick={() => activeChatTabId && closeTab(activeChatTabId)}
           >
-            <Plus className="h-3.5 w-3.5" />
+            <Unplug className="h-3.5 w-3.5" />
           </Button>
         </div>
       </div>

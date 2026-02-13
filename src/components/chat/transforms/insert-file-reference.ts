@@ -12,6 +12,7 @@ export function insertFileReference(
     displayName: string;
     lineStart?: number;
     lineEnd?: number;
+    selectedText?: string;
   },
 ) {
   const node: TFileReferenceElement = {
@@ -20,6 +21,7 @@ export function insertFileReference(
     displayName: opts.displayName,
     lineStart: opts.lineStart,
     lineEnd: opts.lineEnd,
+    ...(opts.selectedText ? { selectedText: opts.selectedText } : {}),
     children: [{ text: "" }],
   };
 

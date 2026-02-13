@@ -16,6 +16,7 @@ import { useAgentStore } from "@/store/agent-store";
 import { openFileFromAbsolutePath, getBaseDir } from "@/lib/utils";
 import { insertFileReference } from "@/components/chat/transforms/insert-file-reference";
 import { MarkdownPlugin } from "@platejs/markdown";
+import { NodeApi } from "platejs";
 import matter from "gray-matter";
 
 const HOTKEY_OPTIONS = {
@@ -236,6 +237,7 @@ function Workspace() {
       // determine line range from editor selection using markdown serialization
       let lineStart: number | undefined;
       let lineEnd: number | undefined;
+      let selectedText: string | undefined;
       if (activeEditor?.selection) {
         const { anchor, focus } = activeEditor.selection;
         if (
@@ -266,6 +268,17 @@ function Workspace() {
             lineStart = startBlock + 1 + frontmatterLineCount;
             lineEnd = endBlock + 1 + frontmatterLineCount;
           }
+
+          // extract the selected text
+          try {
+            const fragment = activeEditor.api.fragment(activeEditor.selection);
+            const text = fragment.map((n: any) => NodeApi.string(n)).join("\n");
+            if (text.trim()) {
+              selectedText = text;
+            }
+          } catch {
+            // ignore — selectedText stays undefined
+          }
         }
       }
 
@@ -283,6 +296,7 @@ function Workspace() {
           displayName,
           lineStart,
           lineEnd,
+          selectedText,
         });
 
         // focus chat editor after panel visibility settles

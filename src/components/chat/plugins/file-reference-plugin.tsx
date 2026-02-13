@@ -9,6 +9,7 @@ export interface TFileReferenceElement extends TElement {
   displayName: string;
   lineStart?: number;
   lineEnd?: number;
+  selectedText?: string;
   children: [{ text: "" }];
 }
 

@@ -197,7 +197,8 @@ export function ChatInput() {
     if (submitDisabled || isResponding || !session) return;
     const text = serializeChatValue(chatEditor.children).trim();
     if (!text) return;
-    void sendPromptAction(session.sessionId, text);
+    const editorValue = JSON.parse(JSON.stringify(chatEditor.children));
+    void sendPromptAction(session.sessionId, text, editorValue);
     chatEditor.tf.reset();
     setEditorText("");
   }, [submitDisabled, isResponding, session, chatEditor, sendPromptAction]);

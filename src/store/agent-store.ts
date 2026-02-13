@@ -106,6 +106,7 @@ export interface ChatMessage {
   plan: PlanEntry[];
   segments: MessageSegment[];
   isStreaming: boolean;
+  editorValue?: any[];
 }
 
 // ─── Chat Session (runtime state per session) ───
@@ -174,7 +175,11 @@ interface ChatSessionActions {
   connect: (agentConfigId: string) => Promise<void>;
   closeTab: (tabId: string) => void;
   switchTab: (tabId: string) => void;
-  sendPrompt: (sessionId: string, text: string) => Promise<void>;
+  sendPrompt: (
+    sessionId: string,
+    text: string,
+    editorValue?: any[],
+  ) => Promise<void>;
   cancelPrompt: (sessionId: string) => Promise<void>;
   respondPermission: (
     sessionId: string,
@@ -853,7 +858,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     set({ activeChatTabId: tabId });
   },
 
-  sendPrompt: async (sessionId, rawText) => {
+  sendPrompt: async (sessionId, rawText, editorValue) => {
     const text = rawText.trim();
     if (!text) return;
 
@@ -931,6 +936,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       plan: [],
       segments: [],
       isStreaming: false,
+      editorValue,
     };
     const assistantMessage: ChatMessage = {
       id: assistantMessageId,
