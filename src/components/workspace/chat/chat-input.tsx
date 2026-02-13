@@ -1,6 +1,14 @@
 import { ArrowUp, Check, ChevronDown, Square } from "lucide-react";
-import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
-import TextareaAutosize from "react-textarea-autosize";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useState,
+} from "react";
+import { Plate, createPlateEditor } from "platejs/react";
+import { ParagraphPlugin, PlateContent } from "platejs/react";
+import { NodeApi } from "platejs";
 
 import {
   Command,
@@ -9,11 +17,7 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
-import {
-  InputGroup,
-  InputGroupAddon,
-  InputGroupButton,
-} from "@/components/ui/input-group";
+import { Button } from "@/components/ui/button";
 import {
   Popover,
   PopoverContent,
@@ -21,8 +25,9 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/store/agent-store";
-
-const MAX_ROWS = 6;
+import { useWorkspaceStore } from "@/store/workspace-store";
+import { FileReferenceKit } from "@/components/chat/plugins/file-reference-kit";
+import { serializeChatValue } from "@/components/chat/transforms/serialize-chat-value";
 
 interface ComboboxItem {
   id: string;
@@ -61,10 +66,16 @@ function SelectorCombobox({
   return (
     <Popover open={open} onOpenChange={setOpen}>
       <PopoverTrigger asChild>
-        <InputGroupButton size="sm" variant="ghost" disabled={disabled}>
+        <Button
+          type="button"
+          size="sm"
+          variant="ghost"
+          disabled={disabled}
+          className="h-8 px-2.5 gap-1.5 text-sm shadow-none"
+        >
           <span className="truncate max-w-48">{selected?.name ?? label}</span>
           <ChevronDown className="h-3.5 w-3.5" />
-        </InputGroupButton>
+        </Button>
       </PopoverTrigger>
       <PopoverContent
         align="start"
@@ -122,14 +133,26 @@ export function ChatInput() {
   });
   const sendPromptAction = useAgentStore((s) => s.sendPrompt);
   const cancelPromptAction = useAgentStore((s) => s.cancelPrompt);
-  const setInputTextAction = useAgentStore((s) => s.setInputText);
   const setModeAction = useAgentStore((s) => s.setMode);
   const setModelAction = useAgentStore((s) => s.setModel);
+  const setChatEditor = useWorkspaceStore((s) => s.setChatEditor);
 
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
 
-  const disabled = !session || (activeTab?.isConnecting ?? false);
-  const inputText = session?.inputText ?? "";
+  const chatEditor = useMemo(
+    () =>
+      createPlateEditor({
+        plugins: [ParagraphPlugin, ...FileReferenceKit],
+      }),
+    [],
+  );
+
+  useEffect(() => {
+    setChatEditor(chatEditor);
+    return () => setChatEditor(null);
+  }, [chatEditor, setChatEditor]);
+
+  const submitDisabled = !session || (activeTab?.isConnecting ?? false);
   const isResponding = session?.isResponding ?? false;
   const availableModes = session?.availableModes ?? [];
   const currentModeId = session?.currentModeId ?? null;
@@ -137,13 +160,15 @@ export function ChatInput() {
   const currentModelId = session?.currentModelId ?? null;
   const availableCommands = session?.availableCommands ?? [];
 
+  const [editorText, setEditorText] = useState("");
+
   const slashQuery = useMemo(() => {
-    if (!inputText.startsWith("/")) return null;
-    if (inputText.includes("\n")) return null;
-    const firstLine = inputText.split("\n")[0];
+    if (!editorText.startsWith("/")) return null;
+    if (editorText.includes("\n")) return null;
+    const firstLine = editorText.split("\n")[0];
     if (firstLine.includes(" ")) return null;
     return firstLine.slice(1).toLowerCase();
-  }, [inputText]);
+  }, [editorText]);
 
   const filteredCommands = useMemo(() => {
     if (slashQuery === null) return [];
@@ -160,55 +185,68 @@ export function ChatInput() {
     setSelectedCommandIndex(0);
   }, [slashQuery, filteredCommands.length]);
 
-  const applySlashCommand = (commandName: string) => {
-    if (session) {
-      setInputTextAction(session.sessionId, `/${commandName} `);
-    }
-  };
+  const applySlashCommand = useCallback(
+    (commandName: string) => {
+      chatEditor.tf.reset();
+      chatEditor.tf.insertText(`/${commandName} `);
+    },
+    [chatEditor],
+  );
 
-  const submitPrompt = () => {
-    if (disabled || isResponding || !session) return;
-    const text = inputText.trim();
+  const submitPrompt = useCallback(() => {
+    if (submitDisabled || isResponding || !session) return;
+    const text = serializeChatValue(chatEditor.children).trim();
     if (!text) return;
     void sendPromptAction(session.sessionId, text);
-  };
+    chatEditor.tf.reset();
+    setEditorText("");
+  }, [submitDisabled, isResponding, session, chatEditor, sendPromptAction]);
 
-  const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (event.key === "ArrowDown" && showSlashMenu) {
-      event.preventDefault();
-      setSelectedCommandIndex((index) =>
-        Math.min(index + 1, filteredCommands.length - 1),
-      );
-      return;
-    }
-    if (event.key === "ArrowUp" && showSlashMenu) {
-      event.preventDefault();
-      setSelectedCommandIndex((index) => Math.max(index - 1, 0));
-      return;
-    }
-    if (event.key === "Enter" && !event.shiftKey) {
-      if (showSlashMenu) {
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent) => {
+      if (event.key === "ArrowDown" && showSlashMenu) {
         event.preventDefault();
-        const selected = filteredCommands[selectedCommandIndex];
-        if (selected) {
-          applySlashCommand(selected.name);
-        }
+        setSelectedCommandIndex((index) =>
+          Math.min(index + 1, filteredCommands.length - 1),
+        );
         return;
       }
-      event.preventDefault();
-      submitPrompt();
-      return;
-    }
-    if (event.key === "Escape" && showSlashMenu) {
-      event.preventDefault();
-      if (session) {
-        setInputTextAction(
-          session.sessionId,
-          inputText.endsWith(" ") ? inputText : `${inputText} `,
-        );
+      if (event.key === "ArrowUp" && showSlashMenu) {
+        event.preventDefault();
+        setSelectedCommandIndex((index) => Math.max(index - 1, 0));
+        return;
       }
-    }
-  };
+      if (event.key === "Enter" && !event.shiftKey) {
+        if (showSlashMenu) {
+          event.preventDefault();
+          const selected = filteredCommands[selectedCommandIndex];
+          if (selected) applySlashCommand(selected.name);
+          return;
+        }
+        event.preventDefault();
+        submitPrompt();
+        return;
+      }
+      if (event.key === "Escape" && showSlashMenu) {
+        event.preventDefault();
+        chatEditor.tf.insertText(" ");
+      }
+    },
+    [
+      showSlashMenu,
+      filteredCommands,
+      selectedCommandIndex,
+      applySlashCommand,
+      submitPrompt,
+      chatEditor,
+    ],
+  );
+
+  const handleEditorChange = useCallback(({ value }: { value: any[] }) => {
+    const firstBlockText =
+      value.length > 0 ? NodeApi.string(value[0] as any) : "";
+    setEditorText(firstBlockText);
+  }, []);
 
   const modeItems: ComboboxItem[] = useMemo(
     () =>
@@ -259,33 +297,27 @@ export function ChatInput() {
           </div>
         )}
 
-        <InputGroup className="bg-transparent dark:bg-transparent rounded-xl">
-          <TextareaAutosize
-            data-slot="input-group-control"
-            className="field-sizing-content min-h-15 w-full resize-none rounded-md bg-transparent p-4 text-sm leading-relaxed transition-[color,box-shadow] outline-none disabled:cursor-not-allowed disabled:opacity-50"
-            value={inputText}
-            disabled={disabled}
-            placeholder={
-              disabled ? "starting session..." : "ask ai anything..."
-            }
-            maxRows={MAX_ROWS}
-            onChange={(event) => {
-              if (session) {
-                setInputTextAction(session.sessionId, event.target.value);
-              }
-            }}
-            onKeyDown={handleKeyDown}
-          />
-          <InputGroupAddon align="block-end">
-            <SelectorCombobox
-              items={modeItems}
-              selectedId={currentModeId}
-              onSelect={(id) => {
-                if (session) setModeAction(session.sessionId, id);
-              }}
-              label="mode"
-              disabled={disabled}
+        <div className="flex flex-col justify-between rounded-xl border border-input shadow-xs min-h-30">
+          <Plate editor={chatEditor} onChange={handleEditorChange}>
+            <PlateContent
+              className="w-full bg-transparent p-4 text-sm leading-7 outline-none"
+              placeholder="ask ai anything..."
+              onKeyDown={handleKeyDown}
             />
+          </Plate>
+
+          <div className="flex items-center gap-1 px-3 pb-3">
+            {availableModes.length > 0 && (
+              <SelectorCombobox
+                items={modeItems}
+                selectedId={currentModeId}
+                onSelect={(id) => {
+                  if (session) setModeAction(session.sessionId, id);
+                }}
+                label="mode"
+                disabled={submitDisabled}
+              />
+            )}
 
             {availableModels.length > 0 && (
               <SelectorCombobox
@@ -295,15 +327,16 @@ export function ChatInput() {
                   if (session) setModelAction(session.sessionId, id);
                 }}
                 label="model"
-                disabled={disabled}
+                disabled={submitDisabled}
               />
             )}
 
-            <InputGroupButton
-              className="ml-auto"
-              size="icon-sm"
+            <Button
+              type="button"
+              size="icon"
               variant="default"
-              disabled={disabled}
+              className="ml-auto size-8"
+              disabled={submitDisabled}
               onClick={() => {
                 if (isResponding && session) {
                   void cancelPromptAction(session.sessionId);
@@ -317,9 +350,9 @@ export function ChatInput() {
               ) : (
                 <ArrowUp className="h-3.5 w-3.5" />
               )}
-            </InputGroupButton>
-          </InputGroupAddon>
-        </InputGroup>
+            </Button>
+          </div>
+        </div>
       </div>
     </div>
   );

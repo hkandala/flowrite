@@ -1,5 +1,5 @@
 import { ChevronDown, KeyRound, Sparkles, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,7 +18,6 @@ import { ScrollButton } from "@/components/ui/scroll-button";
 import type { ConnectionError } from "@/store/agent-store";
 import { useAgentStore } from "@/store/agent-store";
 
-import { AgentSettingsModal } from "./chat/agent-settings-modal";
 import { ChatHeader } from "./chat/chat-header";
 import { ChatInput } from "./chat/chat-input";
 import { ChatMessage } from "./chat/chat-message";
@@ -87,8 +86,6 @@ function ConnectionErrorDisplay({ error }: { error: ConnectionError }) {
 }
 
 function AgentSelectionView() {
-  const [settingsOpen, setSettingsOpen] = useState(false);
-
   const agents = useAgentStore((s) => s.agents);
   const connect = useAgentStore((s) => s.connect);
   const lastSelectedAgentId = useAgentStore((s) => s.lastSelectedAgentId);
@@ -112,77 +109,64 @@ function AgentSelectionView() {
     null;
 
   return (
-    <div className="h-full flex flex-col p-3 text-muted-foreground">
-      <div className="flex-1 flex flex-col items-center justify-center gap-5 text-muted-foreground px-6">
-        <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
-          <Sparkles className="h-5 w-5" />
-        </div>
-        <span className="text-sm">talk to ai agent</span>
-
-        <div className="w-full max-w-74">
-          <InputGroup className="bg-transparent dark:bg-transparent">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <Button
-                  type="button"
-                  variant="ghost"
-                  className="flex-1 justify-between rounded-none border-0 shadow-none h-8 text-sm text-foreground"
-                >
-                  <span className="truncate">
-                    {selectedAgent?.name ??
-                      configuredAgents.find((a) => a.id === effectiveSelectedId)
-                        ?.name ??
-                      "select an agent..."}
-                  </span>
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </Button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent
-                align="start"
-                className="min-w-(--radix-dropdown-menu-trigger-width)"
-              >
-                {configuredAgents.length === 0 ? (
-                  <DropdownMenuItem disabled>
-                    no configured agents
-                  </DropdownMenuItem>
-                ) : (
-                  configuredAgents.map((agent) => (
-                    <DropdownMenuItem
-                      key={agent.id}
-                      onClick={() => void setLastSelectedAgent(agent.id)}
-                    >
-                      {agent.name}
-                    </DropdownMenuItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </InputGroup>
-
-          <Button
-            type="button"
-            variant="glass"
-            className="mt-2 w-full"
-            disabled={!effectiveSelectedId || configuredAgents.length === 0}
-            onClick={() =>
-              effectiveSelectedId && void connect(effectiveSelectedId)
-            }
-          >
-            start session
-          </Button>
-        </div>
+    <div className="flex-1 flex flex-col items-center justify-center gap-5 text-muted-foreground px-6">
+      <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
+        <Sparkles className="h-5 w-5" />
       </div>
+      <span className="text-sm">talk to ai agent</span>
 
-      <Button
-        type="button"
-        variant="ghost"
-        className="mb-4 w-fit self-center"
-        onClick={() => setSettingsOpen(true)}
-      >
-        configure acp agents
-      </Button>
+      <div className="w-full max-w-74">
+        <InputGroup className="bg-transparent dark:bg-transparent">
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <Button
+                type="button"
+                variant="ghost"
+                className="flex-1 justify-between rounded-none border-0 shadow-none h-8 text-sm text-foreground"
+              >
+                <span className="truncate">
+                  {selectedAgent?.name ??
+                    configuredAgents.find((a) => a.id === effectiveSelectedId)
+                      ?.name ??
+                    "select an agent..."}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5" />
+              </Button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent
+              align="start"
+              className="min-w-(--radix-dropdown-menu-trigger-width)"
+            >
+              {configuredAgents.length === 0 ? (
+                <DropdownMenuItem disabled>
+                  no configured agents
+                </DropdownMenuItem>
+              ) : (
+                configuredAgents.map((agent) => (
+                  <DropdownMenuItem
+                    key={agent.id}
+                    onClick={() => void setLastSelectedAgent(agent.id)}
+                  >
+                    {agent.name}
+                  </DropdownMenuItem>
+                ))
+              )}
+            </DropdownMenuContent>
+          </DropdownMenu>
+        </InputGroup>
 
-      <AgentSettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
+        <Button
+          type="button"
+          variant="glass"
+          className="mt-2 w-full"
+          disabled={!effectiveSelectedId || configuredAgents.length === 0}
+          onClick={() =>
+            effectiveSelectedId && void connect(effectiveSelectedId)
+          }
+        >
+          start session
+        </Button>
+      </div>
     </div>
   );
 }
@@ -199,51 +183,52 @@ export function AiChatPane() {
   });
   const respondPermission = useAgentStore((s) => s.respondPermission);
 
-  // No tabs = show agent selection (empty state)
-  if (chatTabs.length === 0 || !activeChatTabId || !activeTab) {
-    return <AgentSelectionView />;
-  }
+  const hasActiveTab = chatTabs.length > 0 && !!activeChatTabId && !!activeTab;
 
-  const isConnecting = activeTab.isConnecting;
-  const connectionError = activeTab.connectionError;
+  const isConnecting = activeTab?.isConnecting ?? false;
+  const connectionError = activeTab?.connectionError ?? null;
   const messages = session?.messages ?? [];
   const pendingPermissions = session?.pendingPermissions ?? [];
   const isResponding = session?.isResponding ?? false;
 
   return (
     <div className="h-full flex flex-col">
-      <ChatHeader />
+      {hasActiveTab && <ChatHeader />}
 
-      <ChatContainerRoot className="flex-1 min-h-0 py-3 pr-5 select-text">
-        <ChatContainerContent className="min-h-full space-y-3">
-          {messages.length === 0 ? (
-            <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-              {connectionError ? (
-                <ConnectionErrorDisplay error={connectionError} />
-              ) : (
-                <>
-                  <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
-                    <Sparkles className="h-5 w-5" />
-                  </div>
-                  <span className="text-sm">
-                    {isConnecting
-                      ? "connecting to agent..."
-                      : "start a conversation"}
-                  </span>
-                </>
-              )}
-            </div>
-          ) : (
-            messages.map((message) => (
-              <ChatMessage key={message.id} message={message} />
-            ))
-          )}
-          <ChatContainerScrollAnchor />
-        </ChatContainerContent>
-        <div className="absolute bottom-40 right-5">
-          <ScrollButton />
-        </div>
-      </ChatContainerRoot>
+      {!hasActiveTab ? (
+        <AgentSelectionView />
+      ) : (
+        <ChatContainerRoot className="flex-1 min-h-0 py-3 pr-5 select-text">
+          <ChatContainerContent className="min-h-full space-y-3">
+            {messages.length === 0 ? (
+              <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
+                {connectionError ? (
+                  <ConnectionErrorDisplay error={connectionError} />
+                ) : (
+                  <>
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
+                      <Sparkles className="h-5 w-5" />
+                    </div>
+                    <span className="text-sm">
+                      {isConnecting
+                        ? "connecting to agent..."
+                        : "start a conversation"}
+                    </span>
+                  </>
+                )}
+              </div>
+            ) : (
+              messages.map((message) => (
+                <ChatMessage key={message.id} message={message} />
+              ))
+            )}
+            <ChatContainerScrollAnchor />
+          </ChatContainerContent>
+          <div className="absolute bottom-40 right-5">
+            <ScrollButton />
+          </div>
+        </ChatContainerRoot>
+      )}
 
       {pendingPermissions.map((permission) => {
         const matchedToolCall = messages

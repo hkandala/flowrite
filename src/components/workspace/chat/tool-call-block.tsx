@@ -152,6 +152,7 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
                   theme: "pierre-dark",
                   disableFileHeader: true,
                   disableLineNumbers: true,
+                  overflow: "wrap",
                 }}
               />
             </div>

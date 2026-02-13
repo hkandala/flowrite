@@ -506,18 +506,14 @@ export function WorkspaceLayout() {
             }
           }}
         >
-          {rightPanelVisible && (
-            <>
-              <PanelResizeHandle
-                side="left"
-                currentWidth={rightPanelWidth}
-                minWidth={RIGHT_PANEL_MIN_WIDTH}
-                maxWidth={RIGHT_PANEL_MAX_WIDTH}
-                onWidthChange={setRightPanelWidth}
-              />
-              <RightPanel />
-            </>
-          )}
+          <PanelResizeHandle
+            side="left"
+            currentWidth={rightPanelWidth}
+            minWidth={RIGHT_PANEL_MIN_WIDTH}
+            maxWidth={RIGHT_PANEL_MAX_WIDTH}
+            onWidthChange={setRightPanelWidth}
+          />
+          <RightPanel />
         </div>
       </div>
 

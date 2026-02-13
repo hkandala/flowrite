@@ -41,6 +41,8 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { useWorkspaceStore, focusActiveEditor } from "@/store/workspace-store";
+import { getBaseDir } from "@/lib/utils";
+import { insertFileReference } from "@/components/chat/transforms/insert-file-reference";
 
 import {
   showEmptySpaceMenu,
@@ -924,6 +926,39 @@ export function FileTreePane() {
       onNewFolder: handleNewFolder,
       onOpen: openFile,
       onOpenToSide: openFileToSide,
+      onAddToChat: async (filePath) => {
+        const state = useWorkspaceStore.getState();
+
+        // ensure right panel visible + chat tab active
+        if (!state.rightPanelVisible) {
+          state.toggleRightPanel();
+        }
+        state.setRightPanelTab("chat");
+
+        // resolve absolute path
+        const baseDir = await getBaseDir();
+        const absolutePath = `${baseDir}/${filePath}`;
+
+        // extract display name
+        const fileName = filePath.split("/").pop() || filePath;
+        const displayName = fileName.endsWith(".md")
+          ? fileName.slice(0, -3)
+          : fileName;
+
+        // insert file reference — chatEditor is always mounted
+        const { chatEditor } = useWorkspaceStore.getState();
+        if (!chatEditor) return;
+
+        insertFileReference(chatEditor, {
+          filePath: absolutePath,
+          displayName,
+        });
+
+        // focus chat editor
+        requestAnimationFrame(() => {
+          chatEditor.tf.focus({ edge: "end" });
+        });
+      },
       onRename: (path) => {
         try {
           tree.getItemInstance(path).startRenaming();

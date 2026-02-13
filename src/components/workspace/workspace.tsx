@@ -13,7 +13,10 @@ import {
   toggleActiveEditorFullWidth,
 } from "@/store/workspace-store";
 import { useAgentStore } from "@/store/agent-store";
-import { openFileFromAbsolutePath } from "@/lib/utils";
+import { openFileFromAbsolutePath, getBaseDir } from "@/lib/utils";
+import { insertFileReference } from "@/components/chat/transforms/insert-file-reference";
+import { MarkdownPlugin } from "@platejs/markdown";
+import matter from "gray-matter";
 
 const HOTKEY_OPTIONS = {
   enableOnContentEditable: true,
@@ -181,6 +184,112 @@ function Workspace() {
     (e) => {
       if (e.repeat) return;
       toggleActiveEditorFullWidth();
+    },
+    HOTKEY_OPTIONS,
+  );
+
+  // Cmd+L — add file reference to chat
+  useHotkeys(
+    "mod+l",
+    async (e) => {
+      if (e.repeat) return;
+      const state = useWorkspaceStore.getState();
+      const { activeFilePath, activeEditor } = state;
+
+      if (!activeFilePath) return;
+
+      // ensure right panel is visible and chat tab is active
+      if (!state.rightPanelVisible) {
+        state.toggleRightPanel();
+      }
+      state.setRightPanelTab("chat");
+
+      // resolve absolute path
+      const isExternal = activeFilePath.startsWith("/");
+      let absolutePath: string;
+      if (isExternal) {
+        absolutePath = activeFilePath;
+      } else {
+        const baseDir = await getBaseDir();
+        absolutePath = `${baseDir}/${activeFilePath}`;
+      }
+
+      // count frontmatter lines to offset line numbers
+      let frontmatterLineCount = 0;
+      try {
+        const rawContent = await invoke<string>(
+          isExternal ? "read_external_file" : "read_file",
+          { path: isExternal ? absolutePath : activeFilePath },
+        );
+        const parsed = matter(rawContent);
+        if (Object.keys(parsed.data).length > 0) {
+          const bodyStart = rawContent.indexOf(parsed.content);
+          if (bodyStart > 0) {
+            frontmatterLineCount =
+              rawContent.slice(0, bodyStart).split("\n").length - 1;
+          }
+        }
+      } catch {
+        // ignore — frontmatter offset stays 0
+      }
+
+      // determine line range from editor selection using markdown serialization
+      let lineStart: number | undefined;
+      let lineEnd: number | undefined;
+      if (activeEditor?.selection) {
+        const { anchor, focus } = activeEditor.selection;
+        if (
+          anchor.path[0] !== focus.path[0] ||
+          anchor.offset !== focus.offset
+        ) {
+          const startBlock = Math.min(anchor.path[0], focus.path[0]);
+          const endBlock = Math.max(anchor.path[0], focus.path[0]);
+
+          try {
+            const mdApi = activeEditor.getApi(MarkdownPlugin).markdown;
+
+            if (startBlock > 0) {
+              const beforeMd = mdApi.serialize({
+                value: activeEditor.children.slice(0, startBlock),
+              });
+              lineStart =
+                beforeMd.split("\n").length + 1 + frontmatterLineCount;
+            } else {
+              lineStart = 1 + frontmatterLineCount;
+            }
+
+            const throughEndMd = mdApi.serialize({
+              value: activeEditor.children.slice(0, endBlock + 1),
+            });
+            lineEnd = throughEndMd.split("\n").length + frontmatterLineCount;
+          } catch {
+            lineStart = startBlock + 1 + frontmatterLineCount;
+            lineEnd = endBlock + 1 + frontmatterLineCount;
+          }
+        }
+      }
+
+      // extract display name (strip path and .md extension)
+      const fileName = activeFilePath.split("/").pop() || activeFilePath;
+      const displayName = fileName.endsWith(".md")
+        ? fileName.slice(0, -3)
+        : fileName;
+
+      // insert file reference — chatEditor is always mounted
+      const { chatEditor: editor } = useWorkspaceStore.getState();
+      if (editor) {
+        insertFileReference(editor, {
+          filePath: absolutePath,
+          displayName,
+          lineStart,
+          lineEnd,
+        });
+
+        // focus chat editor after panel visibility settles
+        setTimeout(() => {
+          editor.tf.focus({ edge: "end" });
+        }, 100);
+      }
     },
     HOTKEY_OPTIONS,
   );

@@ -1,6 +1,7 @@
 import type { ChatMessage as ChatMessageType } from "@/store/agent-store";
 
 import { ChatMarkdown } from "./chat-markdown";
+import { UserMessageContent } from "@/components/chat/ui/user-message-content";
 
 import { PlanBlock } from "./plan-block";
 import { ThinkingBar } from "./thinking-bar";
@@ -15,8 +16,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   if (isUser) {
     return (
-      <div className="w-full rounded-lg border border-border bg-muted/35 px-2.5 py-2 text-sm text-foreground whitespace-pre-wrap wrap-break-word shadow-lg leading-relaxed">
-        {message.content}
+      <div className="w-full rounded-lg border border-border bg-muted/35 p-3 text-sm text-foreground whitespace-pre-wrap wrap-break-word shadow-lg leading-7">
+        <UserMessageContent content={message.content} />
       </div>
     );
   }

@@ -62,6 +62,7 @@ interface WorkspaceState {
   saveConfirmation: SaveConfirmation | null;
   quitConfirmation: QuitConfirmation | null;
   activeEditor: PlateEditor | null;
+  chatEditor: PlateEditor | null;
   rightPanelTab: "chat" | "comments";
   activeCommentId: string | null;
   showNewDocComment: boolean;
@@ -85,6 +86,7 @@ interface WorkspaceActions {
 
   // comments / right panel
   setActiveEditor: (editor: PlateEditor | null) => void;
+  setChatEditor: (editor: PlateEditor | null) => void;
   setRightPanelTab: (tab: "chat" | "comments") => void;
   setActiveCommentId: (id: string | null) => void;
   openCommentInPanel: (commentId: string) => void;
@@ -135,6 +137,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   saveConfirmation: null,
   quitConfirmation: null,
   activeEditor: null,
+  chatEditor: null,
   rightPanelTab: "chat",
   activeCommentId: null,
   showNewDocComment: false,
@@ -171,6 +174,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   // --- comments / right panel ---
 
   setActiveEditor: (editor) => set({ activeEditor: editor }),
+
+  setChatEditor: (editor) => set({ chatEditor: editor }),
 
   setRightPanelTab: (tab) => set({ rightPanelTab: tab }),
 

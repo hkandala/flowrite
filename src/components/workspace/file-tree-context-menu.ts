@@ -6,6 +6,7 @@ export interface FileTreeMenuActions {
   onNewFolder: (parentPath: string) => void;
   onOpen: (filePath: string) => void;
   onOpenToSide: (filePath: string) => void;
+  onAddToChat: (filePath: string) => void;
   onRename: (itemPath: string) => void;
   onDelete: (itemPath: string, isDir: boolean) => void;
   onExpandCollapse: (itemPath: string, isExpanded: boolean) => void;
@@ -48,6 +49,7 @@ export async function showFileContextMenu(
   const [
     openItem,
     openToSideItem,
+    addToChatItem,
     sep1,
     renameItem,
     deleteItem,
@@ -60,6 +62,10 @@ export async function showFileContextMenu(
     MenuItem.new({
       text: "Open to the Side",
       action: () => actions.onOpenToSide(filePath),
+    }),
+    MenuItem.new({
+      text: "Add to Chat",
+      action: () => actions.onAddToChat(filePath),
     }),
     PredefinedMenuItem.new({ item: "Separator" }),
     MenuItem.new({ text: "Rename", action: () => actions.onRename(filePath) }),
@@ -89,6 +95,7 @@ export async function showFileContextMenu(
     items: [
       openItem,
       openToSideItem,
+      addToChatItem,
       sep1,
       renameItem,
       deleteItem,

@@ -37,13 +37,10 @@ export function RightPanel() {
         setRightPanelTab(next);
         if (next === "chat") {
           requestAnimationFrame(() => {
-            const input = document.getElementById(
-              "agent-chat-input",
-            ) as HTMLTextAreaElement | null;
-            if (!input) return;
-            input.focus();
-            const end = input.value.length;
-            input.setSelectionRange(end, end);
+            const chatEditor = useWorkspaceStore.getState().chatEditor;
+            if (chatEditor) {
+              chatEditor.tf.focus({ edge: "end" });
+            }
           });
         }
       }}
@@ -58,7 +55,12 @@ export function RightPanel() {
         </TabsTrigger>
         <TabsTrigger value="comments">comments</TabsTrigger>
       </TabsList>
-      <TabsContent value="chat" className="flex-1 min-h-0">
+      <TabsContent
+        value="chat"
+        className="flex-1 min-h-0"
+        forceMount
+        hidden={rightPanelTab !== "chat"}
+      >
         <AiChatPane />
       </TabsContent>
       <TabsContent value="comments" className="flex-1 min-h-0">
