@@ -170,6 +170,14 @@ pub struct PlanEntryInfo {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffInfo {
+    pub path: String,
+    pub old_text: Option<String>,
+    pub new_text: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase", tag = "event", content = "data")]
 pub enum AgentEvent {
     MessageChunk {
@@ -186,11 +194,13 @@ pub enum AgentEvent {
         status: String,
         content: Option<String>,
         locations: Option<Vec<String>>,
+        diff_data: Option<DiffInfo>,
     },
     #[serde(rename_all = "camelCase")]
     PermissionRequest {
         request_id: String,
         tool_call_id: String,
+        title: Option<String>,
         options: Vec<PermissionOptionInfo>,
     },
     PlanUpdate {
@@ -1220,6 +1230,7 @@ async fn handle_permission_request(
             let event = AgentEvent::PermissionRequest {
                 request_id: request_id.clone(),
                 tool_call_id: request.tool_call.tool_call_id.0.to_string(),
+                title: request.tool_call.fields.title.clone(),
                 options: request
                     .options
                     .iter()
@@ -1275,6 +1286,7 @@ fn content_block_kind(content: &ContentBlock) -> &'static str {
 fn tool_call_to_event(tool_call: &ToolCall) -> AgentEvent {
     let content = tool_call_content_to_string(&tool_call.content);
     let locations = tool_call_locations_to_strings(&tool_call.locations);
+    let diff_data = tool_call_diff_data(&tool_call.content);
     AgentEvent::ToolCallUpdate {
         tool_call_id: tool_call.tool_call_id.0.to_string(),
         title: tool_call.title.clone(),
@@ -1282,7 +1294,21 @@ fn tool_call_to_event(tool_call: &ToolCall) -> AgentEvent {
         status: tool_call_status_to_string(tool_call.status),
         content,
         locations,
+        diff_data,
     }
+}
+
+fn tool_call_diff_data(content: &[ToolCallContent]) -> Option<DiffInfo> {
+    for item in content {
+        if let ToolCallContent::Diff(diff) = item {
+            return Some(DiffInfo {
+                path: diff.path.to_string_lossy().to_string(),
+                old_text: diff.old_text.clone(),
+                new_text: Some(diff.new_text.clone()),
+            });
+        }
+    }
+    None
 }
 
 fn tool_call_content_to_string(content: &[ToolCallContent]) -> Option<String> {

@@ -6,12 +6,34 @@ import { cn } from "@/lib/utils";
 interface ThinkingBarProps {
   thinking: string;
   isStreaming: boolean;
+  thinkingStartedAt: number | null;
 }
 
-export function ThinkingBar({ thinking, isStreaming }: ThinkingBarProps) {
+const formatDuration = (startedAt: number): string => {
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  if (seconds >= 60) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `thought for ${m}m ${s}s`;
+  }
+  return `thought for ${seconds}s`;
+};
+
+export function ThinkingBar({
+  thinking,
+  isStreaming,
+  thinkingStartedAt,
+}: ThinkingBarProps) {
   const [expanded, setExpanded] = useState(false);
 
   if (!thinking.trim()) return null;
+
+  const label =
+    isStreaming
+      ? "thinking..."
+      : thinkingStartedAt
+        ? formatDuration(thinkingStartedAt)
+        : "thought";
 
   return (
     <div className="px-1.5">
@@ -32,7 +54,7 @@ export function ThinkingBar({ thinking, isStreaming }: ThinkingBarProps) {
               : "text-muted-foreground",
           )}
         >
-          thinking...
+          {label}
         </span>
         <ChevronRight
           className={cn(

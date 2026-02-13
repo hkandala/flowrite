@@ -28,6 +28,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
       <ThinkingBar
         thinking={message.thinking}
         isStreaming={message.isStreaming}
+        thinkingStartedAt={message.thinkingStartedAt}
       />
       <PlanBlock entries={message.plan} />
       {hasSegments

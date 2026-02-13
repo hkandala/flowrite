@@ -63,11 +63,18 @@ export interface SlashCommand {
 export interface PermissionRequest {
   requestId: string;
   toolCallId: string;
+  title?: string;
   options: {
     optionId: string;
     name: string;
     kind: string;
   }[];
+}
+
+export interface DiffData {
+  path: string;
+  oldText: string | null;
+  newText: string | null;
 }
 
 export interface ToolCall {
@@ -77,6 +84,7 @@ export interface ToolCall {
   status: ToolCallStatus;
   content?: string;
   locations?: string[];
+  diffData?: DiffData;
 }
 
 export interface PlanEntry {
@@ -93,6 +101,7 @@ export interface ChatMessage {
   role: "user" | "assistant";
   content: string;
   thinking: string;
+  thinkingStartedAt: number | null;
   toolCalls: ToolCall[];
   plan: PlanEntry[];
   segments: MessageSegment[];
@@ -216,6 +225,7 @@ type AgentEvent =
         status: string;
         content?: string;
         locations?: string[];
+        diffData?: DiffData;
       };
     }
   | {
@@ -223,6 +233,7 @@ type AgentEvent =
       data: {
         requestId: string;
         toolCallId: string;
+        title?: string;
         options: { optionId: string; name: string; kind: string }[];
       };
     }
@@ -903,6 +914,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       role: "user",
       content: text,
       thinking: "",
+      thinkingStartedAt: null,
       toolCalls: [],
       plan: [],
       segments: [],
@@ -913,6 +925,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       role: "assistant",
       content: "",
       thinking: "",
+      thinkingStartedAt: null,
       toolCalls: [],
       plan: [],
       segments: [],
@@ -965,6 +978,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               (message) => ({
                 ...message,
                 thinking: `${message.thinking}${event.data.text}`,
+                thinkingStartedAt:
+                  message.thinkingStartedAt ?? Date.now(),
               }),
             );
             break;
@@ -983,6 +998,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                   status: normalizeToolStatus(event.data.status),
                   content: event.data.content ?? existing?.content,
                   locations: event.data.locations ?? existing?.locations,
+                  diffData: event.data.diffData ?? existing?.diffData,
                 };
                 const nextToolCalls = existing
                   ? message.toolCalls.map((toolCall) =>
@@ -1027,6 +1043,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               {
                 requestId: event.data.requestId,
                 toolCallId: event.data.toolCallId,
+                title: event.data.title,
                 options: event.data.options.map((option) => ({
                   optionId: option.optionId,
                   name: option.name,
