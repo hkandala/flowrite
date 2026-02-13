@@ -1,4 +1,7 @@
-use std::{collections::HashMap, path::PathBuf, str::FromStr, sync::Arc, time::Duration};
+use std::{
+    collections::HashMap, io::Write as IoWrite, path::PathBuf, str::FromStr, sync::Arc,
+    time::Duration,
+};
 
 use sacp::{
     schema::{
@@ -16,6 +19,53 @@ use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, oneshot};
 
+type AcpProcessLog = Arc<std::sync::Mutex<std::io::BufWriter<std::fs::File>>>;
+
+fn create_acp_log_file(
+    app_handle: &AppHandle,
+    agent_id: &str,
+) -> Result<(AcpProcessLog, PathBuf), String> {
+    let log_dir = app_handle
+        .path()
+        .app_log_dir()
+        .map_err(|e| format!("failed to get app log dir: {e}"))?
+        .join("acp");
+    std::fs::create_dir_all(&log_dir).map_err(|e| format!("failed to create acp log dir: {e}"))?;
+    let timestamp = chrono::Local::now().format("%Y-%m-%dT%H-%M-%S");
+    let filename = format!("{agent_id}_{timestamp}.log");
+    let path = log_dir.join(&filename);
+    let file =
+        std::fs::File::create(&path).map_err(|e| format!("failed to create log file: {e}"))?;
+    let writer = std::io::BufWriter::new(file);
+    Ok((Arc::new(std::sync::Mutex::new(writer)), path))
+}
+
+fn write_acp_log(log: &AcpProcessLog, direction: &str, line: &str) {
+    if let Ok(mut writer) = log.lock() {
+        let ts = chrono::Local::now().format("%Y-%m-%dT%H:%M:%S%.3f");
+        let _ = writeln!(writer, "[{ts}] [{direction}] {line}");
+        let _ = writer.flush();
+    }
+}
+
+fn cleanup_old_acp_logs(app_handle: &AppHandle, max_age: Duration) {
+    let log_dir = match app_handle.path().app_log_dir() {
+        Ok(dir) => dir.join("acp"),
+        Err(_) => return,
+    };
+    if let Ok(entries) = std::fs::read_dir(&log_dir) {
+        for entry in entries.flatten() {
+            if let Ok(metadata) = entry.metadata() {
+                if let Ok(modified) = metadata.modified() {
+                    if modified.elapsed().unwrap_or_default() > max_age {
+                        let _ = std::fs::remove_file(entry.path());
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub struct AcpState(pub(crate) tokio::sync::Mutex<AcpStateInner>);
 
 #[derive(Default)]
@@ -31,6 +81,8 @@ struct AgentHandle {
     last_used: std::time::Instant,
     /// Last JSON-RPC error captured from the wire (for fallback error messages).
     captured_error: CapturedError,
+    /// Path to the per-process raw wire log file.
+    log_file: Option<PathBuf>,
 }
 
 impl Default for AcpState {
@@ -48,6 +100,7 @@ pub struct AgentInfo {
     pub name: String,
     pub version: String,
     pub auth_methods: Vec<AuthMethodInfo>,
+    pub log_file: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -228,8 +281,6 @@ struct ActiveStream {
 
 type InitSender = Arc<tokio::sync::Mutex<Option<oneshot::Sender<Result<AgentInfo, String>>>>>;
 
-const ACP_PROMPT_PREVIEW_CHARS: usize = 220;
-const ACP_LOG_MAX_CHARS: usize = 4000;
 const MAX_AGENT_PROCESSES: usize = 5;
 
 fn compute_agent_id(command: &str, env: &HashMap<String, String>) -> String {
@@ -254,11 +305,7 @@ pub async fn acp_connect(
     env: HashMap<String, String>,
 ) -> Result<AgentInfo, String> {
     let agent_id = compute_agent_id(&command, &env);
-    log::info!(
-        "[acp][{agent_id}] connect requested command='{}' env={}",
-        command,
-        to_json_log(&redact_env_for_logging(&env))
-    );
+    log::info!("[acp] acp_connect agent_id={agent_id} command='{command}'");
     if let Some(existing_tx) = {
         let mut inner = state.0.lock().await;
         if let Some(handle) = inner.agents.get_mut(&agent_id) {
@@ -268,17 +315,8 @@ pub async fn acp_connect(
             None
         }
     } {
-        log::info!("[acp][{agent_id}] reusing existing connection");
+        log::info!("[acp] acp_connect agent_id={agent_id} reused");
         let info_result = request_agent_info(existing_tx).await;
-        match &info_result {
-            Ok(info) => log::info!(
-                "[acp][{agent_id}] connect reused existing agent info={}",
-                to_json_log(info)
-            ),
-            Err(error) => {
-                log::warn!("[acp][{agent_id}] failed to query existing agent info: {error}")
-            }
-        }
         return info_result;
     }
 
@@ -292,7 +330,7 @@ pub async fn acp_connect(
                 .min_by_key(|(_, handle)| handle.last_used)
                 .map(|(id, _)| id.clone());
             if let Some(evict_id) = oldest {
-                log::info!("[acp][{agent_id}] evicting LRU agent '{evict_id}' (capacity={MAX_AGENT_PROCESSES})");
+                log::info!("[acp] acp_connect evicting agent_id={evict_id}");
                 inner.agents.remove(&evict_id);
             }
         }
@@ -310,6 +348,7 @@ pub async fn acp_connect(
                 command_tx: command_tx.clone(),
                 last_used: std::time::Instant::now(),
                 captured_error: captured_error.clone(),
+                log_file: None,
             },
         );
     }
@@ -344,10 +383,11 @@ pub async fn acp_connect(
 
     match &connect_result {
         Ok(info) => log::info!(
-            "[acp][{agent_id}] connect completed info={}",
-            to_json_log(info)
+            "[acp] acp_connect agent_id={agent_id} -> ok name={} version={}",
+            info.name,
+            info.version
         ),
-        Err(error) => log::error!("[acp][{agent_id}] connect failed: {error}"),
+        Err(error) => log::error!("[acp] acp_connect agent_id={agent_id} -> error: {error}"),
     }
 
     connect_result
@@ -359,10 +399,7 @@ pub async fn acp_new_session(
     agent_id: String,
     cwd: String,
 ) -> Result<SessionInfo, String> {
-    log::info!(
-        "[acp][{agent_id}] -> client new_session {}",
-        to_json_log(&serde_json::json!({ "cwd": cwd.clone() }))
-    );
+    log::info!("[acp] acp_new_session agent_id={agent_id}");
     let (command_tx, captured_error) = get_agent_handle_parts(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
     command_tx
@@ -394,10 +431,10 @@ pub async fn acp_new_session(
 
     match &result {
         Ok(session) => log::info!(
-            "[acp][{agent_id}] <- client new_session {}",
-            to_json_log(session)
+            "[acp] acp_new_session agent_id={agent_id} -> session_id={}",
+            session.session_id
         ),
-        Err(error) => log::warn!("[acp][{agent_id}] <- client new_session error: {error}"),
+        Err(error) => log::error!("[acp] acp_new_session agent_id={agent_id} -> error: {error}"),
     }
 
     result
@@ -411,13 +448,11 @@ pub async fn acp_prompt(
     text: String,
     on_event: Channel<AgentEvent>,
 ) -> Result<(), String> {
-    let prompt_preview = summarize_text_for_log(&text, ACP_PROMPT_PREVIEW_CHARS);
     let prompt_len = text.chars().count();
-    log::info!(
-        "[acp][{agent_id}] -> client prompt session_id={session_id} chars={prompt_len} preview={prompt_preview}"
-    );
+    log::info!("[acp] acp_prompt agent_id={agent_id} session_id={session_id} chars={prompt_len}");
     let command_tx = get_agent_command_tx(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
+    let session_id_log = session_id.clone();
     command_tx
         .send(AgentCommand::Prompt {
             session_id,
@@ -432,8 +467,12 @@ pub async fn acp_prompt(
         .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
 
     match &result {
-        Ok(()) => log::info!("[acp][{agent_id}] <- client prompt completed"),
-        Err(error) => log::warn!("[acp][{agent_id}] <- client prompt error: {error}"),
+        Ok(()) => {
+            log::info!("[acp] acp_prompt agent_id={agent_id} session_id={session_id_log} -> done")
+        }
+        Err(error) => log::warn!(
+            "[acp] acp_prompt agent_id={agent_id} session_id={session_id_log} -> error: {error}"
+        ),
     }
 
     result
@@ -447,7 +486,7 @@ pub async fn acp_respond_permission(
     option_id: String,
 ) -> Result<(), String> {
     log::info!(
-        "[acp][{agent_id}] -> client respond_permission request_id={request_id} option_id={option_id}"
+        "[acp] acp_respond_permission agent_id={agent_id} request_id={request_id} option_id={option_id}"
     );
     let command_tx = get_agent_command_tx(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
@@ -464,8 +503,10 @@ pub async fn acp_respond_permission(
         .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
 
     match &result {
-        Ok(()) => log::info!("[acp][{agent_id}] <- client respond_permission completed"),
-        Err(error) => log::warn!("[acp][{agent_id}] <- client respond_permission error: {error}"),
+        Ok(()) => log::info!("[acp] acp_respond_permission agent_id={agent_id} -> done"),
+        Err(error) => {
+            log::warn!("[acp] acp_respond_permission agent_id={agent_id} -> error: {error}")
+        }
     }
 
     result
@@ -477,7 +518,7 @@ pub async fn acp_cancel(
     agent_id: String,
     session_id: String,
 ) -> Result<(), String> {
-    log::info!("[acp][{agent_id}] -> client cancel session_id={session_id}");
+    log::info!("[acp] acp_cancel agent_id={agent_id} session_id={session_id}");
     let command_tx = get_agent_command_tx(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
     command_tx
@@ -492,8 +533,8 @@ pub async fn acp_cancel(
         .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
 
     match &result {
-        Ok(()) => log::info!("[acp][{agent_id}] <- client cancel completed"),
-        Err(error) => log::warn!("[acp][{agent_id}] <- client cancel error: {error}"),
+        Ok(()) => log::info!("[acp] acp_cancel agent_id={agent_id} -> done"),
+        Err(error) => log::warn!("[acp] acp_cancel agent_id={agent_id} -> error: {error}"),
     }
 
     result
@@ -506,7 +547,7 @@ pub async fn acp_set_mode(
     session_id: String,
     mode_id: String,
 ) -> Result<(), String> {
-    log::info!("[acp][{agent_id}] -> client set_mode session_id={session_id} mode_id={mode_id}");
+    log::info!("[acp] acp_set_mode agent_id={agent_id} session_id={session_id} mode_id={mode_id}");
     let command_tx = get_agent_command_tx(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
     command_tx
@@ -522,8 +563,8 @@ pub async fn acp_set_mode(
         .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
 
     match &result {
-        Ok(()) => log::info!("[acp][{agent_id}] <- client set_mode completed"),
-        Err(error) => log::warn!("[acp][{agent_id}] <- client set_mode error: {error}"),
+        Ok(()) => log::info!("[acp] acp_set_mode agent_id={agent_id} -> done"),
+        Err(error) => log::warn!("[acp] acp_set_mode agent_id={agent_id} -> error: {error}"),
     }
 
     result
@@ -536,7 +577,9 @@ pub async fn acp_set_model(
     session_id: String,
     model_id: String,
 ) -> Result<(), String> {
-    log::info!("[acp][{agent_id}] -> client set_model session_id={session_id} model_id={model_id}");
+    log::info!(
+        "[acp] acp_set_model agent_id={agent_id} session_id={session_id} model_id={model_id}"
+    );
     let command_tx = get_agent_command_tx(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
     command_tx
@@ -552,8 +595,8 @@ pub async fn acp_set_model(
         .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
 
     match &result {
-        Ok(()) => log::info!("[acp][{agent_id}] <- client set_model completed"),
-        Err(error) => log::warn!("[acp][{agent_id}] <- client set_model error: {error}"),
+        Ok(()) => log::info!("[acp] acp_set_model agent_id={agent_id} -> done"),
+        Err(error) => log::warn!("[acp] acp_set_model agent_id={agent_id} -> error: {error}"),
     }
 
     result
@@ -613,25 +656,43 @@ async fn run_agent_task(
 ) {
     let init_sender = Arc::new(tokio::sync::Mutex::new(Some(init_tx)));
     let shared = Arc::new(tokio::sync::Mutex::new(RuntimeShared::default()));
-    log::info!(
-        "[acp][{agent_id}] starting background task command='{}' env={}",
-        command,
-        to_json_log(&redact_env_for_logging(&env))
-    );
 
-    let (acp_agent, captured_models, captured_commands) =
-        match build_agent(&agent_id, command, env, captured_error.clone()) {
-            Ok(agent) => agent,
-            Err(message) => {
-                log::error!("[acp][{agent_id}] failed to build agent command: {message}");
-                if let Some(init_tx) = init_sender.lock().await.take() {
-                    let _ = init_tx.send(Err(message.clone()));
-                }
-                emit_agent_crashed(&app_handle, &agent_id, &message);
-                remove_agent_handle_from_app_state(&app_handle, &agent_id).await;
-                return;
+    cleanup_old_acp_logs(&app_handle, Duration::from_secs(7 * 24 * 3600));
+
+    let (process_log, log_path) = match create_acp_log_file(&app_handle, &agent_id) {
+        Ok(result) => result,
+        Err(message) => {
+            log::error!("[acp] failed to create log file for agent_id={agent_id}: {message}");
+            if let Some(init_tx) = init_sender.lock().await.take() {
+                let _ = init_tx.send(Err(message.clone()));
             }
-        };
+            emit_agent_crashed(&app_handle, &agent_id, &message);
+            remove_agent_handle_from_app_state(&app_handle, &agent_id).await;
+            return;
+        }
+    };
+    let log_path_string = log_path.to_string_lossy().to_string();
+    log::info!("[acp] process started agent_id={agent_id} log_file={log_path_string}");
+    set_agent_log_file(&app_handle, &agent_id, log_path).await;
+
+    let (acp_agent, captured_models, captured_commands) = match build_agent(
+        &agent_id,
+        command,
+        env,
+        captured_error.clone(),
+        process_log.clone(),
+    ) {
+        Ok(agent) => agent,
+        Err(message) => {
+            log::error!("[acp][{agent_id}] failed to build agent command: {message}");
+            if let Some(init_tx) = init_sender.lock().await.take() {
+                let _ = init_tx.send(Err(message.clone()));
+            }
+            emit_agent_crashed(&app_handle, &agent_id, &message);
+            remove_agent_handle_from_app_state(&app_handle, &agent_id).await;
+            return;
+        }
+    };
 
     let shared_for_permissions = shared.clone();
     let permission_agent_id = agent_id.clone();
@@ -653,27 +714,25 @@ async fn run_agent_task(
 
     let loop_agent_id = agent_id.clone();
     let run_result: Result<(), String> = match connection_result {
-        Ok(connection) => {
-            log::info!("[acp][{agent_id}] ACP connection established");
-            connection
-                .run_until({
-                    let shared = shared.clone();
-                    let init_sender = init_sender.clone();
-                    move |cx| {
-                        run_agent_command_loop(
-                            loop_agent_id,
-                            cx,
-                            command_rx,
-                            shared,
-                            init_sender,
-                            captured_models,
-                            captured_commands,
-                        )
-                    }
-                })
-                .await
-                .map_err(|error| error.to_string())
-        }
+        Ok(connection) => connection
+            .run_until({
+                let shared = shared.clone();
+                let init_sender = init_sender.clone();
+                move |cx| {
+                    run_agent_command_loop(
+                        loop_agent_id,
+                        cx,
+                        command_rx,
+                        shared,
+                        init_sender,
+                        captured_models,
+                        captured_commands,
+                        log_path_string,
+                    )
+                }
+            })
+            .await
+            .map_err(|error| error.to_string()),
         Err(error) => {
             log::error!("[acp][{agent_id}] failed to establish ACP connection: {error}");
             Err(error.to_string())
@@ -692,7 +751,7 @@ async fn run_agent_task(
     }
 
     if let Err(message) = run_result {
-        log::error!("[acp][{agent_id}] background task failed: {message}");
+        log::error!("[acp] process crashed agent_id={agent_id}: {message}");
         // Check if we captured a structured error from the wire for a better crash message
         let wire_err = captured_error.lock().ok().and_then(|guard| guard.clone());
         if let Some(wire_err) = wire_err {
@@ -710,7 +769,7 @@ async fn run_agent_task(
             emit_agent_crashed(&app_handle, &agent_id, &clean);
         }
     } else {
-        log::info!("[acp][{agent_id}] background task ended cleanly");
+        log::info!("[acp] process ended agent_id={agent_id}");
     }
 }
 
@@ -722,11 +781,8 @@ async fn run_agent_command_loop(
     init_sender: InitSender,
     captured_models: CapturedModels,
     captured_commands: CapturedCommands,
+    log_path_string: String,
 ) -> Result<(), sacp::Error> {
-    log::info!(
-        "[acp][{agent_id}] -> initialize protocol={:?}",
-        ProtocolVersion::LATEST
-    );
     let init_request = InitializeRequest::new(ProtocolVersion::LATEST);
     let init_response = tokio::time::timeout(
         Duration::from_secs(30),
@@ -734,16 +790,9 @@ async fn run_agent_command_loop(
     )
     .await
     .map_err(|_| sacp::util::internal_error("agent initialization timed out"))??;
-    log::info!(
-        "[acp][{agent_id}] <- initialize {}",
-        to_json_log(&init_response)
-    );
 
-    let info = to_agent_info(&agent_id, &init_response);
-    log::info!(
-        "[acp][{agent_id}] resolved agent info={}",
-        to_json_log(&info)
-    );
+    let mut info = to_agent_info(&agent_id, &init_response);
+    info.log_file = Some(log_path_string);
     if let Some(init_tx) = init_sender.lock().await.take() {
         let _ = init_tx.send(Ok(info.clone()));
     }
@@ -760,20 +809,13 @@ async fn run_agent_command_loop(
         tokio::select! {
             maybe_command = command_rx.recv() => {
                 let Some(command) = maybe_command else {
-                    log::info!("[acp][{agent_id}] command channel closed, shutting down loop");
                     break;
                 };
                 match command {
                     AgentCommand::GetInfo { respond_to } => {
-                        log::info!("[acp][{agent_id}] -> get_info");
                         let _ = respond_to.send(Ok(info.clone()));
-                        log::info!("[acp][{agent_id}] <- get_info {}", to_json_log(&info));
                     }
                     AgentCommand::NewSession { cwd, respond_to } => {
-                        log::info!(
-                            "[acp][{agent_id}] -> session/new {}",
-                            to_json_log(&serde_json::json!({ "cwd": cwd.clone() }))
-                        );
                         let session = cx
                             .build_session(PathBuf::from(cwd.clone()))
                             .block_task()
@@ -796,14 +838,10 @@ async fn run_agent_command_loop(
                                 let session_info =
                                     to_session_info(&session, wire_models, wire_commands);
                                 sessions.insert(session_id, session);
-                                log::info!(
-                                    "[acp][{agent_id}] <- session/new {}",
-                                    to_json_log(&session_info)
-                                );
                                 let _ = respond_to.send(Ok(session_info));
                             }
                             Err(error) => {
-                                log::error!("[acp][{agent_id}] <- session/new error: {error}");
+                                log::error!("[acp] session/new failed agent_id={agent_id}: {error}");
                                 let conn_err = sacp_error_to_connection_error(&error);
                                 let _ = respond_to.send(Err(connection_error_to_string(&conn_err)));
                             }
@@ -816,29 +854,17 @@ async fn run_agent_command_loop(
                         respond_to,
                     } => {
                         if active_prompts.contains_key(&session_id) {
-                            log::warn!(
-                                "[acp][{agent_id}][session:{session_id}] reject prompt: prompt already in progress"
-                            );
                             let _ = respond_to.send(Err("prompt already in progress".to_string()));
                             continue;
                         }
                         if text.trim().is_empty() {
-                            log::warn!("[acp][{agent_id}][session:{session_id}] rejected empty prompt");
                             let _ = respond_to.send(Err("prompt text cannot be empty".to_string()));
                             continue;
                         }
                         let Some(session) = sessions.remove(&session_id) else {
-                            log::error!(
-                                "[acp][{agent_id}] prompt requested unknown session_id={session_id}"
-                            );
                             let _ = respond_to.send(Err(format!("session '{session_id}' not found")));
                             continue;
                         };
-                        let preview = summarize_text_for_log(&text, ACP_PROMPT_PREVIEW_CHARS);
-                        let chars = text.chars().count();
-                        log::info!(
-                            "[acp][{agent_id}][session:{session_id}] -> session/prompt chars={chars} preview={preview}"
-                        );
 
                         set_active_stream_for_session(
                             &shared,
@@ -876,36 +902,18 @@ async fn run_agent_command_loop(
                         option_id,
                         respond_to,
                     } => {
-                        log::info!(
-                            "[acp][{agent_id}] -> permission/respond request_id={request_id} option_id={option_id}"
-                        );
                         let result =
                             resolve_permission_selection(&shared, request_id, Some(option_id)).await;
-                        match &result {
-                            Ok(()) => log::info!("[acp][{agent_id}] <- permission/respond completed"),
-                            Err(error) => {
-                                log::warn!("[acp][{agent_id}] <- permission/respond error: {error}")
-                            }
-                        }
                         let _ = respond_to.send(result);
                     }
                     AgentCommand::Cancel {
                         session_id,
                         respond_to,
                     } => {
-                        log::info!("[acp][{agent_id}][session:{session_id}] -> session/cancel");
                         let send_result = cx
                             .send_notification(CancelNotification::new(session_id.clone()))
                             .map_err(|error| error.to_string());
                         cancel_pending_permissions_for_session(&shared, &session_id).await;
-                        match &send_result {
-                            Ok(()) => {
-                                log::info!("[acp][{agent_id}][session:{session_id}] <- session/cancel ok")
-                            }
-                            Err(error) => log::warn!(
-                                "[acp][{agent_id}][session:{session_id}] <- session/cancel error: {error}"
-                            ),
-                        }
                         let _ = respond_to.send(send_result);
                     }
                     AgentCommand::SetMode {
@@ -914,17 +922,11 @@ async fn run_agent_command_loop(
                         respond_to,
                     } => {
                         if active_prompts.contains_key(&session_id) {
-                            log::warn!(
-                                "[acp][{agent_id}][session:{session_id}] reject mode change while prompt running"
-                            );
                             let _ = respond_to.send(Err(
                                 "cannot change mode while a prompt is running".to_string()
                             ));
                             continue;
                         }
-                        log::info!(
-                            "[acp][{agent_id}][session:{session_id}] -> session/set_mode mode_id={mode_id}"
-                        );
                         let mode_result = cx
                             .send_request(SetSessionModeRequest::new(
                                 session_id.clone(),
@@ -934,14 +936,6 @@ async fn run_agent_command_loop(
                             .await
                             .map_err(|error| error.to_string())
                             .map(|_| ());
-                        match &mode_result {
-                            Ok(()) => log::info!(
-                                "[acp][{agent_id}][session:{session_id}] <- session/set_mode mode_id={mode_id} ok"
-                            ),
-                            Err(error) => log::warn!(
-                                "[acp][{agent_id}][session:{session_id}] <- session/set_mode mode_id={mode_id} error: {error}"
-                            ),
-                        }
                         let _ = respond_to.send(mode_result);
                     }
                     AgentCommand::SetModel {
@@ -950,17 +944,11 @@ async fn run_agent_command_loop(
                         respond_to,
                     } => {
                         if active_prompts.contains_key(&session_id) {
-                            log::warn!(
-                                "[acp][{agent_id}][session:{session_id}] reject model change while prompt running"
-                            );
                             let _ = respond_to.send(Err(
                                 "cannot change model while a prompt is running".to_string()
                             ));
                             continue;
                         }
-                        log::info!(
-                            "[acp][{agent_id}][session:{session_id}] -> session/set_model model_id={model_id}"
-                        );
                         let model_result = cx
                             .send_request(SetSessionModelRequest {
                                 session_id: session_id.clone(),
@@ -970,20 +958,11 @@ async fn run_agent_command_loop(
                             .await
                             .map_err(|error| error.to_string())
                             .map(|_| ());
-                        match &model_result {
-                            Ok(()) => log::info!(
-                                "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} ok"
-                            ),
-                            Err(error) => log::warn!(
-                                "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} error: {error}"
-                            ),
-                        }
                         let _ = respond_to.send(model_result);
                     }
                 }
             }
             Some((session_id, session)) = session_return_rx.recv() => {
-                log::info!("[acp][{agent_id}][session:{session_id}] reader task finished, re-inserting session");
                 active_prompts.remove(&session_id);
                 sessions.insert(session_id, session);
             }
@@ -991,7 +970,6 @@ async fn run_agent_command_loop(
     }
 
     cancel_all_pending_permissions(&shared).await;
-    log::info!("[acp][{agent_id}] command loop finished");
     Ok(())
 }
 
@@ -1008,18 +986,12 @@ async fn prompt_reader_task(
         sacp::ActiveSession<'static, sacp::link::ClientToAgent>,
     )>,
 ) {
-    let preview = summarize_text_for_log(&text, ACP_PROMPT_PREVIEW_CHARS);
-    let chars = text.chars().count();
-    log::info!(
-        "[acp][{agent_id}][session:{session_id}] prompt_reader_task started chars={chars} preview={preview}"
-    );
-
     match session.send_prompt(text) {
-        Ok(()) => {
-            log::info!("[acp][{agent_id}][session:{session_id}] session/prompt accepted");
-        }
+        Ok(()) => {}
         Err(error) => {
-            log::error!("[acp][{agent_id}][session:{session_id}] failed to send prompt: {error}");
+            log::error!(
+                "[acp] failed to send prompt agent_id={agent_id} session_id={session_id}: {error}"
+            );
             let _ = respond_to.send(Err(format!("failed to send prompt to agent: {error}")));
             clear_active_stream_for_session(&shared, &session_id).await;
             let _ = return_tx.send((session_id, session)).await;
@@ -1036,18 +1008,12 @@ async fn prompt_reader_task(
         match session.read_update().await {
             Ok(SessionMessage::StopReason(stop_reason)) => {
                 let stop_reason_text = stop_reason_to_string(stop_reason);
-                log::info!(
-                    "[acp][{agent_id}][session:{session_id}] <- session/prompt stop_reason={} updates={} visible_output={}",
-                    stop_reason_text,
-                    update_count,
-                    saw_visible_output
-                );
                 if !saw_visible_output {
                     let message = format!(
                         "agent finished with stop reason '{}' but produced no visible output. check ACP logs for upstream provider/model errors.",
                         stop_reason_text
                     );
-                    log::warn!("[acp][{agent_id}][session:{session_id}] {}", message);
+                    log::warn!("[acp] agent_id={agent_id} session_id={session_id} {message}");
                     let _ = on_event.send(AgentEvent::Error {
                         message: message.clone(),
                     });
@@ -1114,28 +1080,16 @@ async fn prompt_reader_task(
 }
 
 fn handle_session_notification_in_reader(
-    agent_id: &str,
-    session_id: &str,
+    _agent_id: &str,
+    _session_id: &str,
     on_event: &Channel<AgentEvent>,
     tool_calls: &mut HashMap<String, ToolCall>,
-    update_count: usize,
+    _update_count: usize,
     saw_visible_output: &mut bool,
     notification: SessionNotification,
 ) -> Result<(), sacp::Error> {
-    let update_summary = describe_session_update(&notification.update);
-    log::info!(
-        "[acp][{agent_id}][session:{session_id}] <- session/update #{} {} payload={}",
-        update_count,
-        update_summary,
-        to_json_log(&notification)
-    );
     match notification.update {
-        SessionUpdate::UserMessageChunk(chunk) => {
-            log::info!(
-                "[acp][{agent_id}][session:{session_id}] ignoring user_message_chunk content_type={}",
-                content_block_kind(&chunk.content)
-            );
-        }
+        SessionUpdate::UserMessageChunk(_) => {}
         SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
             ContentBlock::Text(text_content) => {
                 if !text_content.text.is_empty() {
@@ -1156,10 +1110,6 @@ fn handle_session_notification_in_reader(
                 on_event
                     .send(AgentEvent::MessageChunk { text: placeholder })
                     .map_err(sacp::util::internal_error)?;
-                log::warn!(
-                    "[acp][{agent_id}][session:{session_id}] surfaced unsupported content block type={}",
-                    content_block_kind(&other)
-                );
             }
         },
         SessionUpdate::AgentThoughtChunk(chunk) => {
@@ -1172,10 +1122,6 @@ fn handle_session_notification_in_reader(
                         text: text_content.text,
                     })
                     .map_err(sacp::util::internal_error)?;
-            } else {
-                log::info!(
-                    "[acp][{agent_id}][session:{session_id}] ignoring non-text thought chunk"
-                );
             }
         }
         SessionUpdate::ToolCall(tool_call) => {
@@ -1239,34 +1185,19 @@ fn handle_session_notification_in_reader(
                 .send(AgentEvent::CommandsUpdate { commands })
                 .map_err(sacp::util::internal_error)?;
         }
-        SessionUpdate::ConfigOptionUpdate(update) => {
-            log::info!(
-                "[acp][{agent_id}][session:{session_id}] received config option update count={}",
-                update.config_options.len()
-            );
-        }
-        _ => {
-            log::info!(
-                "[acp][{agent_id}][session:{session_id}] unhandled session update variant: {}",
-                update_summary
-            );
-        }
+        SessionUpdate::ConfigOptionUpdate(_) => {}
+        _ => {}
     }
 
     Ok(())
 }
 
 async fn handle_permission_request(
-    agent_id: String,
+    _agent_id: String,
     shared: Arc<tokio::sync::Mutex<RuntimeShared>>,
     request: RequestPermissionRequest,
     request_cx: sacp::JrRequestCx<RequestPermissionResponse>,
 ) -> Result<(), sacp::Error> {
-    log::info!(
-        "[acp][{agent_id}][session:{}] <- session/request_permission {}",
-        request.session_id.0,
-        to_json_log(&request)
-    );
     let (decision_tx, decision_rx) = oneshot::channel::<Option<String>>();
     let request_id;
     let mut should_wait = false;
@@ -1306,11 +1237,6 @@ async fn handle_permission_request(
     }
 
     if !should_wait {
-        log::warn!(
-            "[acp][{agent_id}][session:{}] permission request {} cancelled: no active prompt listener",
-            request.session_id.0,
-            request_id
-        );
         let mut runtime = shared.lock().await;
         runtime.pending_permissions.remove(&request_id);
         return request_cx.respond(RequestPermissionResponse::new(
@@ -1325,13 +1251,6 @@ async fn handle_permission_request(
         runtime.pending_permissions.remove(&request_id);
     }
 
-    log::info!(
-        "[acp][{agent_id}][session:{}] -> permission decision request_id={} selected_option={}",
-        request.session_id.0,
-        request_id,
-        selected_option.as_deref().unwrap_or("<cancelled>")
-    );
-
     let response = match selected_option {
         Some(option_id) => RequestPermissionResponse::new(RequestPermissionOutcome::Selected(
             SelectedPermissionOutcome::new(option_id),
@@ -1339,63 +1258,7 @@ async fn handle_permission_request(
         None => RequestPermissionResponse::new(RequestPermissionOutcome::Cancelled),
     };
 
-    log::info!(
-        "[acp][{agent_id}][session:{}] <- permission response {}",
-        request.session_id.0,
-        to_json_log(&response)
-    );
     request_cx.respond(response)
-}
-
-fn describe_session_update(update: &SessionUpdate) -> String {
-    match update {
-        SessionUpdate::UserMessageChunk(chunk) => {
-            format!(
-                "user_message_chunk content_type={}",
-                content_block_kind(&chunk.content)
-            )
-        }
-        SessionUpdate::AgentMessageChunk(chunk) => {
-            format!(
-                "agent_message_chunk content_type={}",
-                content_block_kind(&chunk.content)
-            )
-        }
-        SessionUpdate::AgentThoughtChunk(chunk) => {
-            format!(
-                "agent_thought_chunk content_type={}",
-                content_block_kind(&chunk.content)
-            )
-        }
-        SessionUpdate::ToolCall(tool_call) => format!(
-            "tool_call id={} title={} status={}",
-            tool_call.tool_call_id.0,
-            tool_call.title,
-            tool_call_status_to_string(tool_call.status)
-        ),
-        SessionUpdate::ToolCallUpdate(update) => format!(
-            "tool_call_update id={} fields={}",
-            update.tool_call_id.0,
-            to_json_log(&update.fields)
-        ),
-        SessionUpdate::Plan(plan) => format!("plan entry_count={}", plan.entries.len()),
-        SessionUpdate::AvailableCommandsUpdate(update) => {
-            format!(
-                "available_commands_update count={}",
-                update.available_commands.len()
-            )
-        }
-        SessionUpdate::CurrentModeUpdate(update) => {
-            format!(
-                "current_mode_update current_mode_id={}",
-                update.current_mode_id.0
-            )
-        }
-        SessionUpdate::ConfigOptionUpdate(update) => {
-            format!("config_option_update count={}", update.config_options.len())
-        }
-        _ => "unknown_update".to_string(),
-    }
 }
 
 fn content_block_kind(content: &ContentBlock) -> &'static str {
@@ -1406,81 +1269,6 @@ fn content_block_kind(content: &ContentBlock) -> &'static str {
         ContentBlock::ResourceLink(_) => "resource_link",
         ContentBlock::Resource(_) => "resource",
         _ => "other",
-    }
-}
-
-fn summarize_text_for_log(text: &str, max_chars: usize) -> String {
-    let collapsed = text.replace('\n', "\\n");
-    if collapsed.is_empty() {
-        return "<empty>".to_string();
-    }
-    truncate_for_log(&collapsed, max_chars)
-}
-
-fn truncate_for_log(text: &str, max_chars: usize) -> String {
-    if text.chars().count() <= max_chars {
-        return text.to_string();
-    }
-    let mut truncated = String::new();
-    for ch in text.chars().take(max_chars) {
-        truncated.push(ch);
-    }
-    format!("{truncated}...<truncated>")
-}
-
-fn to_json_log<T: Serialize>(value: &T) -> String {
-    match serde_json::to_string(value) {
-        Ok(serialized) => truncate_for_log(&serialized, ACP_LOG_MAX_CHARS),
-        Err(error) => format!("<json_serialize_error: {error}>"),
-    }
-}
-
-fn redact_env_for_logging(env: &HashMap<String, String>) -> HashMap<String, String> {
-    env.iter()
-        .map(|(name, value)| {
-            if is_sensitive_env_key(name) {
-                (
-                    name.clone(),
-                    format!("<redacted:{} chars>", value.chars().count()),
-                )
-            } else {
-                (name.clone(), truncate_for_log(value, 120))
-            }
-        })
-        .collect()
-}
-
-fn is_sensitive_env_key(name: &str) -> bool {
-    let lower = name.to_ascii_lowercase();
-    [
-        "key",
-        "token",
-        "secret",
-        "password",
-        "passwd",
-        "pwd",
-        "credential",
-        "cookie",
-        "session",
-        "auth",
-        "private",
-    ]
-    .iter()
-    .any(|needle| lower.contains(needle))
-}
-
-fn log_acp_wire_line(agent_id: &str, direction: LineDirection, line: &str) {
-    let payload = truncate_for_log(&line.replace('\n', "\\n"), ACP_LOG_MAX_CHARS);
-    match direction {
-        LineDirection::Stderr => {
-            if payload.to_ascii_lowercase().contains("error") {
-                log::warn!("[acp-wire][{agent_id}][stderr] {payload}");
-            } else {
-                log::info!("[acp-wire][{agent_id}][stderr] {payload}");
-            }
-        }
-        LineDirection::Stdout => log::debug!("[acp-wire][{agent_id}][stdout] {payload}"),
-        LineDirection::Stdin => log::debug!("[acp-wire][{agent_id}][stdin] {payload}"),
     }
 }
 
@@ -1553,12 +1341,14 @@ fn to_agent_info(agent_id: &str, response: &sacp::schema::InitializeResponse) ->
             name: info.title.clone().unwrap_or_else(|| info.name.clone()),
             version: info.version.clone(),
             auth_methods,
+            log_file: None,
         },
         None => AgentInfo {
             agent_id: agent_id.to_string(),
             name: "agent".to_string(),
             version: "unknown".to_string(),
             auth_methods,
+            log_file: None,
         },
     }
 }
@@ -1615,40 +1405,25 @@ fn to_session_info(
 }
 
 fn build_agent(
-    agent_id: &str,
+    _agent_id: &str,
     command: String,
     env: HashMap<String, String>,
     captured_error: CapturedError,
+    process_log: AcpProcessLog,
 ) -> Result<(AcpAgent, CapturedModels, CapturedCommands), String> {
-    log::info!(
-        "[acp][{agent_id}] build_agent command='{}' env={}",
-        command,
-        to_json_log(&redact_env_for_logging(&env))
-    );
     let parsed = AcpAgent::from_str(&command)
         .map_err(|error| format!("invalid command '{command}': {error}"))?;
     let mut server = parsed.into_server();
     match &mut server {
         sacp::schema::McpServer::Stdio(stdio) => {
-            let mut merged_env_names = Vec::new();
             for (name, value) in env {
-                let env_name = name.clone();
                 if let Some(existing) = stdio.env.iter_mut().find(|variable| variable.name == name)
                 {
                     existing.value = value;
                 } else {
                     stdio.env.push(sacp::schema::EnvVariable::new(name, value));
                 }
-                merged_env_names.push(env_name);
             }
-            merged_env_names.sort();
-            merged_env_names.dedup();
-            log::info!(
-                "[acp][{agent_id}] build_agent stdio command='{}' args={} merged_env_names={}",
-                stdio.command.display(),
-                stdio.args.len(),
-                to_json_log(&merged_env_names)
-            );
         }
         _ => {
             return Err(
@@ -1656,14 +1431,18 @@ fn build_agent(
             );
         }
     }
-    let wire_agent_id = agent_id.to_string();
     let captured_models: CapturedModels = Arc::new(std::sync::Mutex::new(None));
     let captured_models_for_callback = captured_models.clone();
     let captured_commands: CapturedCommands = Arc::new(std::sync::Mutex::new(None));
     let captured_commands_for_callback = captured_commands.clone();
     let captured_error_for_callback = captured_error.clone();
     let agent = AcpAgent::new(server).with_debug(move |line, direction| {
-        log_acp_wire_line(&wire_agent_id, direction, line);
+        let direction_str = match direction {
+            LineDirection::Stdout => "stdout",
+            LineDirection::Stdin => "stdin",
+            LineDirection::Stderr => "stderr",
+        };
+        write_acp_log(&process_log, direction_str, line);
         if matches!(direction, LineDirection::Stdout) {
             if let Ok(rpc) = serde_json::from_str::<RawJsonRpcResponse>(line) {
                 if let Some(result) = rpc.result {
@@ -1672,12 +1451,6 @@ fn build_agent(
                     {
                         if session_result.session_id.is_some() {
                             if let Some(models) = session_result.models {
-                                log::info!(
-                                    "[acp-wire][{}] captured models: current={} available={}",
-                                    wire_agent_id,
-                                    models.current_model_id,
-                                    models.available_models.len()
-                                );
                                 if let Ok(mut guard) = captured_models_for_callback.lock() {
                                     *guard = Some(models);
                                 }
@@ -1686,18 +1459,11 @@ fn build_agent(
                     }
                 }
                 if let Some(ref error) = rpc.error {
-                    log::info!(
-                        "[acp-wire][{}] captured error: code={} message={}",
-                        wire_agent_id,
-                        error.code,
-                        error.message
-                    );
                     if let Ok(mut guard) = captured_error_for_callback.lock() {
                         *guard = Some(error.clone());
                     }
                 }
             }
-            // Check for session/update notifications with available_commands_update
             if line.contains("available_commands_update") {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
                     if val.get("method").and_then(|m| m.as_str()) == Some("session/update") {
@@ -1720,11 +1486,6 @@ fn build_agent(
                                         }
                                     })
                                     .collect();
-                                log::info!(
-                                    "[acp-wire][{}] captured commands: count={}",
-                                    wire_agent_id,
-                                    slash_commands.len()
-                                );
                                 if let Ok(mut guard) = captured_commands_for_callback.lock() {
                                     *guard = Some(slash_commands);
                                 }
@@ -1824,6 +1585,15 @@ async fn remove_agent_handle_from_app_state(app_handle: &AppHandle, agent_id: &s
     if let Some(state) = app_handle.try_state::<AcpState>() {
         let mut inner = state.0.lock().await;
         inner.agents.remove(agent_id);
+    }
+}
+
+async fn set_agent_log_file(app_handle: &AppHandle, agent_id: &str, log_file: PathBuf) {
+    if let Some(state) = app_handle.try_state::<AcpState>() {
+        let mut inner = state.0.lock().await;
+        if let Some(handle) = inner.agents.get_mut(agent_id) {
+            handle.log_file = Some(log_file);
+        }
     }
 }
 

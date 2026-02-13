@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { Plus, Trash2 } from "lucide-react";
+import { FileText, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 
 import {
@@ -135,10 +135,10 @@ export function AgentSettingsModal({
                         alt={`${agent.name} icon`}
                         loading="lazy"
                         referrerPolicy="no-referrer"
-                        className="h-8 w-8 rounded-sm border border-border/70 bg-transparent object-contain p-0.5 shrink-0 dark:invert dark:brightness-125"
+                        className="h-8 w-8 rounded-sm bg-transparent object-contain p-0.5 shrink-0 dark:invert dark:brightness-125"
                       />
                     ) : (
-                      <div className="h-8 w-8 rounded-sm border border-border/70 bg-transparent shrink-0" />
+                      <div className="h-8 w-8 rounded-sm bg-transparent shrink-0" />
                     )}
                     <div className="min-w-0 space-y-1">
                       <div className="text-sm text-foreground font-medium truncate">
@@ -149,14 +149,32 @@ export function AgentSettingsModal({
                       </div>
                     </div>
                   </div>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="icon-sm"
-                    onClick={() => void removeAgent(agent.id)}
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </Button>
+                  <div className="flex items-center gap-0.5">
+                    {agent.lastLogFile && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-sm"
+                        title="copy log file path"
+                        onClick={() => {
+                          void navigator.clipboard.writeText(
+                            agent.lastLogFile!,
+                          );
+                          toast.success("log file path copied to clipboard");
+                        }}
+                      >
+                        <FileText className="h-3.5 w-3.5" />
+                      </Button>
+                    )}
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="icon-sm"
+                      onClick={() => void removeAgent(agent.id)}
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </div>
 
                 <div className="space-y-2">

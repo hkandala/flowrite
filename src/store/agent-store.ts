@@ -27,6 +27,7 @@ export interface AgentConfig {
   source: "registry" | "custom";
   commandConfigured: boolean;
   downloadUrl?: string;
+  lastLogFile?: string;
 }
 
 export interface SessionMode {
@@ -105,6 +106,7 @@ export interface ChatSession {
   agentId: string;
   agentName: string;
   agentConfigId: string;
+  logFile: string | null;
 
   messages: ChatMessage[];
   isResponding: boolean;
@@ -184,6 +186,7 @@ interface AgentInfoResponse {
   name: string;
   version: string;
   authMethods: AuthMethodInfo[];
+  logFile: string | null;
 }
 
 interface SessionInfoResponse {
@@ -752,6 +755,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         agentId: info.agentId,
         agentName: info.name,
         agentConfigId,
+        logFile: info.logFile ?? null,
         messages: [],
         isResponding: false,
         pendingPermissions: [],
@@ -782,6 +786,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               }
             : t,
         ),
+        agents: info.logFile
+          ? current.agents.map((a) =>
+              a.id === agentConfigId ? { ...a, lastLogFile: info.logFile! } : a,
+            )
+          : current.agents,
       }));
     } catch (error) {
       if (!get().chatTabs.some((t) => t.id === tabId)) return;
@@ -1183,6 +1192,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         agentId,
         agentName: activeSession?.agentName ?? agent?.name ?? "ai agent",
         agentConfigId,
+        logFile: activeSession?.logFile ?? null,
         messages: [],
         isResponding: false,
         pendingPermissions: [],

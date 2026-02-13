@@ -1,7 +1,10 @@
-import { ArrowLeft, Plus } from "lucide-react";
+import { useState } from "react";
+import { ArrowLeft, Plus, SlidersHorizontal } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useAgentStore } from "@/store/agent-store";
+
+import { AgentSettingsModal } from "./agent-settings-modal";
 
 export function ChatHeader() {
   const activeChatTabId = useAgentStore((s) => s.activeChatTabId);
@@ -14,6 +17,8 @@ export function ChatHeader() {
   });
   const closeTab = useAgentStore((s) => s.closeTab);
   const newChat = useAgentStore((s) => s.newChat);
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const agentName = session?.agentName ?? activeTab?.label ?? "ai agent";
   const sessionBusy = !session || activeTab?.isConnecting;
@@ -41,6 +46,15 @@ export function ChatHeader() {
             type="button"
             variant="ghost"
             size="icon-sm"
+            title="agent settings"
+            onClick={() => setSettingsOpen(true)}
+          >
+            <SlidersHorizontal className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
             title="new chat"
             disabled={!!sessionBusy}
             onClick={() => void newChat()}
@@ -49,6 +63,8 @@ export function ChatHeader() {
           </Button>
         </div>
       </div>
+
+      <AgentSettingsModal open={settingsOpen} onOpenChange={setSettingsOpen} />
     </div>
   );
 }
