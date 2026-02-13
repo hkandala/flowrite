@@ -12,7 +12,6 @@ const REGISTRY_LOADED_KEY = "registry-loaded";
 const ACP_REGISTRY_URL =
   "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
-type ConnectionStatus = "disconnected" | "connecting" | "connected" | "error";
 type ToolCallStatus = "pending" | "in_progress" | "completed" | "failed";
 type PlanEntryStatus = "pending" | "in_progress" | "completed";
 
@@ -99,32 +98,47 @@ export interface ChatMessage {
   isStreaming: boolean;
 }
 
-interface AgentState {
-  agents: AgentConfig[];
-  registryLoaded: boolean;
-  selectedAgentId: string | null;
+// ─── Chat Session (runtime state per session) ───
 
-  activeAgentId: string | null;
-  activeSessionId: string | null;
-  connectionStatus: ConnectionStatus;
-  connectionError: ConnectionError | null;
-  agentName: string | null;
-
-  availableModes: SessionMode[];
-  currentModeId: string | null;
-  availableCommands: SlashCommand[];
-  availableModels: ModelInfo[];
-  currentModelId: string | null;
+export interface ChatSession {
+  sessionId: string;
+  agentId: string;
+  agentName: string;
+  agentConfigId: string;
 
   messages: ChatMessage[];
   isResponding: boolean;
-  isCreatingSession: boolean;
-
-  pendingPermission: PermissionRequest | null;
+  pendingPermissions: PermissionRequest[];
   inputText: string;
+
+  availableModes: SessionMode[];
+  currentModeId: string | null;
+  lastSentModeId: string | null;
+  availableCommands: SlashCommand[];
+  availableModels: ModelInfo[];
+  currentModelId: string | null;
+  lastSentModelId: string | null;
 }
 
-interface AgentActions {
+// ─── Chat Tab (lightweight UI view) ───
+
+export interface ChatTab {
+  id: string;
+  sessionId: string | null;
+  agentConfigId: string;
+  label: string;
+  isConnecting: boolean;
+  connectionError: ConnectionError | null;
+}
+
+// ─── Store Interface ───
+
+interface AgentConfigState {
+  agents: AgentConfig[];
+  registryLoaded: boolean;
+}
+
+interface AgentConfigActions {
   initAgents: () => Promise<void>;
   updateAgent: (id: string, partial: Partial<AgentConfig>) => Promise<void>;
   addAgent: (config: {
@@ -135,22 +149,35 @@ interface AgentActions {
     description?: string;
   }) => Promise<void>;
   removeAgent: (id: string) => Promise<void>;
-  selectAgent: (id: string | null) => void;
-
-  connect: (agentId: string) => Promise<void>;
-  disconnect: () => void;
-  endSessionAndGoBack: () => void;
-  sendPrompt: (text: string) => Promise<void>;
-  respondPermission: (requestId: string, optionId: string) => Promise<void>;
-  cancelPrompt: () => Promise<void>;
-  newChat: () => Promise<void>;
-  setCurrentModeId: (modeId: string | null) => void;
-  setCurrentModelId: (modelId: string | null) => void;
-
-  setInputText: (text: string) => void;
 }
 
-type AgentStore = AgentState & AgentActions;
+interface ChatSessionState {
+  sessions: Record<string, ChatSession>;
+  chatTabs: ChatTab[];
+  activeChatTabId: string | null;
+}
+
+interface ChatSessionActions {
+  connect: (agentConfigId: string) => Promise<void>;
+  closeTab: (tabId: string) => void;
+  switchTab: (tabId: string) => void;
+  sendPrompt: (sessionId: string, text: string) => Promise<void>;
+  cancelPrompt: (sessionId: string) => Promise<void>;
+  respondPermission: (
+    sessionId: string,
+    requestId: string,
+    optionId: string,
+  ) => Promise<void>;
+  newChat: () => Promise<void>;
+  setMode: (sessionId: string, modeId: string) => void;
+  setModel: (sessionId: string, modelId: string) => void;
+  setInputText: (sessionId: string, text: string) => void;
+}
+
+type AgentStore = AgentConfigState &
+  AgentConfigActions &
+  ChatSessionState &
+  ChatSessionActions;
 
 interface AgentInfoResponse {
   agentId: string;
@@ -436,55 +463,100 @@ const persistAgentSettings = async (
   await store.save();
 };
 
+// ─── Session Helper ───
+
+const updateSession = (
+  set: (updater: (current: AgentStore) => Partial<AgentStore>) => void,
+  sessionId: string,
+  updater:
+    | Partial<ChatSession>
+    | ((session: ChatSession) => Partial<ChatSession>),
+) => {
+  set((current) => {
+    const session = current.sessions[sessionId];
+    if (!session) return {};
+    const updates = typeof updater === "function" ? updater(session) : updater;
+    return {
+      sessions: {
+        ...current.sessions,
+        [sessionId]: { ...session, ...updates },
+      },
+    };
+  });
+};
+
+// ─── Crash Listener ───
+
 const ensureCrashListener = () => {
   if (crashListenerRegistered) return;
   crashListenerRegistered = true;
 
   void listen<AgentCrashedPayload>("acp-agent-crashed", (event) => {
-    const { activeAgentId } = useAgentStore.getState();
-    if (activeAgentId !== event.payload.agentId) {
-      return;
-    }
+    const { sessions, chatTabs } = useAgentStore.getState();
 
     const rawMessage =
       event.payload.message ?? "agent process stopped unexpectedly";
     const kind = event.payload.kind ?? "crashed";
-    const connectionError: ConnectionError = {
-      kind: kind as ConnectionError["kind"],
-      message: rawMessage,
-    };
+
+    // Find all sessions using this agentId
+    const affected = Object.values(sessions).filter(
+      (s) => s.agentId === event.payload.agentId,
+    );
+    if (affected.length === 0 && chatTabs.length === 0) return;
+
+    // Update each affected session
+    const updatedSessions = { ...sessions };
+    for (const session of affected) {
+      updatedSessions[session.sessionId] = {
+        ...session,
+        isResponding: false,
+        pendingPermissions: [],
+      };
+    }
+
+    // Update any connecting tabs for this agent
+    const affectedAgentConfigIds = new Set(
+      affected.map((s) => s.agentConfigId),
+    );
+    const updatedTabs = chatTabs.map((tab) => {
+      const tabSession = tab.sessionId ? sessions[tab.sessionId] : null;
+      if (
+        tabSession?.agentId === event.payload.agentId ||
+        (!tab.sessionId && affectedAgentConfigIds.has(tab.agentConfigId))
+      ) {
+        return {
+          ...tab,
+          isConnecting: false,
+          connectionError: {
+            kind: kind as ConnectionError["kind"],
+            message: rawMessage,
+          },
+        };
+      }
+      return tab;
+    });
+
     useAgentStore.setState({
-      connectionStatus: "error",
-      connectionError,
-      isResponding: false,
-      pendingPermission: null,
+      sessions: updatedSessions,
+      chatTabs: updatedTabs,
     });
     toast.error("agent crashed", { description: rawMessage });
   });
 };
 
+// ─── Store ───
+
 export const useAgentStore = create<AgentStore>((set, get) => ({
+  // ─── Agent Config State ───
   agents: [],
   registryLoaded: false,
-  selectedAgentId: null,
 
-  activeAgentId: null,
-  activeSessionId: null,
-  connectionStatus: "disconnected",
-  connectionError: null,
-  agentName: null,
+  // ─── Chat Session State ───
+  sessions: {},
+  chatTabs: [],
+  activeChatTabId: null,
 
-  availableModes: [],
-  currentModeId: null,
-  availableCommands: [],
-  availableModels: [],
-  currentModelId: null,
-
-  messages: [],
-  isResponding: false,
-  isCreatingSession: false,
-  pendingPermission: null,
-  inputText: "",
+  // ─── Agent Config Actions ───
 
   initAgents: async () => {
     ensureCrashListener();
@@ -514,14 +586,9 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           }
         }
 
-        const firstConfigured =
-          nextAgents.find((agent) => agent.commandConfigured)?.id ??
-          nextAgents[0]?.id ??
-          null;
         set({
           agents: nextAgents,
           registryLoaded: true,
-          selectedAgentId: get().selectedAgentId ?? firstConfigured,
         });
         return;
       }
@@ -530,25 +597,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       const registryAgents = await Promise.all(
         registryAgentsRaw.map(toAgentConfig),
       );
-      const selectedAgentId =
-        registryAgents.find((agent) => agent.commandConfigured)?.id ??
-        registryAgents[0]?.id ??
-        null;
 
       set({
         agents: registryAgents,
         registryLoaded: true,
-        selectedAgentId,
       });
 
       await persistAgentSettings(registryAgents, true);
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "failed to initialize agents";
-      set({
-        connectionStatus: "error",
-        connectionError: { kind: "unknown", message },
-      });
       toast.error("agent setup failed", { description: message });
     }
   },
@@ -582,92 +640,81 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       commandConfigured: command.length > 0,
     };
     const nextAgents = [...get().agents, nextAgent];
-    set({
-      agents: nextAgents,
-      selectedAgentId: nextAgent.id,
-    });
+    set({ agents: nextAgents });
     await persistAgentSettings(nextAgents, get().registryLoaded);
   },
 
   removeAgent: async (id) => {
     const state = get();
     const nextAgents = state.agents.filter((agent) => agent.id !== id);
-    const selectedAgentId =
-      state.selectedAgentId === id
-        ? (nextAgents.find((agent) => agent.commandConfigured)?.id ??
-          nextAgents[0]?.id ??
-          null)
-        : state.selectedAgentId;
 
-    const shouldDisconnect = state.activeAgentId === id;
+    // Close tabs for this agent config
+    const remainingTabs = state.chatTabs.filter(
+      (tab) => tab.agentConfigId !== id,
+    );
+
+    // Remove sessions for this agent config
+    const nextSessions = { ...state.sessions };
+    for (const [sessionId, session] of Object.entries(nextSessions)) {
+      if (session.agentConfigId === id) {
+        delete nextSessions[sessionId];
+      }
+    }
+
+    // Update active tab if needed
+    let nextActiveTabId = state.activeChatTabId;
+    if (
+      nextActiveTabId &&
+      !remainingTabs.some((tab) => tab.id === nextActiveTabId)
+    ) {
+      nextActiveTabId =
+        remainingTabs.length > 0
+          ? remainingTabs[remainingTabs.length - 1].id
+          : null;
+    }
 
     set({
       agents: nextAgents,
-      selectedAgentId,
-      ...(shouldDisconnect
-        ? {
-            activeAgentId: null,
-            activeSessionId: null,
-            connectionStatus: "disconnected" as const,
-            connectionError: null,
-            agentName: null,
-            availableModes: [],
-            currentModeId: null,
-            availableCommands: [],
-            availableModels: [],
-            currentModelId: null,
-            messages: [],
-            pendingPermission: null,
-            isResponding: false,
-          }
-        : {}),
+      chatTabs: remainingTabs,
+      sessions: nextSessions,
+      activeChatTabId: nextActiveTabId,
     });
 
     await persistAgentSettings(nextAgents, get().registryLoaded);
   },
 
-  selectAgent: (id) => set({ selectedAgentId: id }),
+  // ─── Chat Session Actions ───
 
-  connect: async (agentId) => {
-    const agent = get().agents.find((candidate) => candidate.id === agentId);
-    if (!agent) {
-      set({
-        connectionStatus: "error",
-        connectionError: {
-          kind: "unknown",
-          message: "selected agent not found",
-        },
-      });
-      return;
-    }
-    if (!agent.commandConfigured || agent.command.trim().length === 0) {
-      set({
-        connectionStatus: "error",
-        connectionError: {
-          kind: "unknown",
-          message: "configure the agent command before connecting",
-        },
-      });
-      return;
-    }
+  connect: async (agentConfigId) => {
+    const agent = get().agents.find(
+      (candidate) => candidate.id === agentConfigId,
+    );
+    if (!agent) return;
+    if (!agent.commandConfigured || agent.command.trim().length === 0) return;
 
-    set({
-      connectionStatus: "connecting",
+    const tabId = createId();
+    const tab: ChatTab = {
+      id: tabId,
+      sessionId: null,
+      agentConfigId,
+      label: agent.name,
+      isConnecting: true,
       connectionError: null,
-      selectedAgentId: agentId,
-      agentName: agent.name,
-      messages: [],
-      isResponding: false,
-      pendingPermission: null,
-      inputText: "",
-    });
+    };
+
+    set((current) => ({
+      chatTabs: [...current.chatTabs, tab],
+      activeChatTabId: tabId,
+    }));
 
     try {
       const info = await invoke<AgentInfoResponse>("acp_connect", {
         command: agent.command,
         env: agent.env,
       });
-      if (get().connectionStatus !== "connecting") return;
+
+      // Check if tab still exists
+      if (!get().chatTabs.some((t) => t.id === tabId)) return;
 
       let session: SessionInfoResponse;
       try {
@@ -677,7 +724,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
           cwd,
         });
       } catch (sessionError) {
-        if (get().connectionStatus !== "connecting") return;
+        if (!get().chatTabs.some((t) => t.id === tabId)) return;
         const connectionError = parseConnectionError(sessionError);
         if (
           connectionError.kind === "auth_required" &&
@@ -685,13 +732,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         ) {
           connectionError.authMethods = info.authMethods;
         }
-        set({
-          connectionStatus: "error",
-          connectionError,
-          activeAgentId: null,
-          activeSessionId: null,
-          isResponding: false,
-        });
+        set((current) => ({
+          chatTabs: current.chatTabs.map((t) =>
+            t.id === tabId ? { ...t, isConnecting: false, connectionError } : t,
+          ),
+        }));
         if (connectionError.kind !== "auth_required") {
           toast.error("connection failed", {
             description: connectionError.message,
@@ -699,102 +744,148 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         }
         return;
       }
-      if (get().connectionStatus !== "connecting") return;
 
-      set({
-        activeAgentId: info.agentId,
-        selectedAgentId: agentId,
-        activeSessionId: session.sessionId,
-        connectionStatus: "connected",
-        connectionError: null,
+      if (!get().chatTabs.some((t) => t.id === tabId)) return;
+
+      const chatSession: ChatSession = {
+        sessionId: session.sessionId,
+        agentId: info.agentId,
         agentName: info.name,
+        agentConfigId,
+        messages: [],
+        isResponding: false,
+        pendingPermissions: [],
+        inputText: "",
         availableModes: session.availableModes ?? [],
         currentModeId:
           session.currentModeId ?? session.availableModes?.[0]?.id ?? null,
-        availableCommands:
-          session.availableCommands?.length > 0
-            ? session.availableCommands
-            : get().availableCommands,
+        lastSentModeId:
+          session.currentModeId ?? session.availableModes?.[0]?.id ?? null,
+        availableCommands: session.availableCommands ?? [],
         availableModels: session.availableModels ?? [],
         currentModelId: session.currentModelId ?? null,
-        messages: [],
-        isResponding: false,
-        pendingPermission: null,
-      });
+        lastSentModelId: session.currentModelId ?? null,
+      };
+
+      set((current) => ({
+        sessions: {
+          ...current.sessions,
+          [session.sessionId]: chatSession,
+        },
+        chatTabs: current.chatTabs.map((t) =>
+          t.id === tabId
+            ? {
+                ...t,
+                sessionId: session.sessionId,
+                isConnecting: false,
+                connectionError: null,
+              }
+            : t,
+        ),
+      }));
     } catch (error) {
-      if (get().connectionStatus !== "connecting") return;
+      if (!get().chatTabs.some((t) => t.id === tabId)) return;
       const connectionError = parseConnectionError(error);
-      set({
-        connectionStatus: "error",
-        connectionError,
-        activeAgentId: null,
-        activeSessionId: null,
-        isResponding: false,
-      });
+      set((current) => ({
+        chatTabs: current.chatTabs.map((t) =>
+          t.id === tabId ? { ...t, isConnecting: false, connectionError } : t,
+        ),
+      }));
       toast.error("connection failed", {
         description: connectionError.message,
       });
     }
   },
 
-  disconnect: () =>
-    set({
-      activeAgentId: null,
-      activeSessionId: null,
-      connectionStatus: "disconnected",
-      connectionError: null,
-      agentName: null,
-      availableModes: [],
-      currentModeId: null,
-      availableCommands: [],
-      availableModels: [],
-      currentModelId: null,
-      messages: [],
-      isResponding: false,
-      pendingPermission: null,
-      inputText: "",
-    }),
+  closeTab: (tabId) => {
+    set((current) => {
+      const tab = current.chatTabs.find((t) => t.id === tabId);
+      const nextTabs = current.chatTabs.filter((t) => t.id !== tabId);
 
-  endSessionAndGoBack: () => {
-    const { activeAgentId, activeSessionId, isResponding } = get();
-    if (isResponding && activeAgentId && activeSessionId) {
-      void invoke("acp_cancel", {
-        agentId: activeAgentId,
-        sessionId: activeSessionId,
-      }).catch(() => {});
-    }
-    set({
-      activeAgentId: null,
-      activeSessionId: null,
-      connectionStatus: "disconnected",
-      connectionError: null,
-      agentName: null,
-      availableModes: [],
-      currentModeId: null,
-      availableCommands: [],
-      availableModels: [],
-      currentModelId: null,
-      messages: [],
-      isResponding: false,
-      pendingPermission: null,
-      inputText: "",
+      // Remove the session associated with this tab
+      const nextSessions = { ...current.sessions };
+      if (tab?.sessionId) {
+        delete nextSessions[tab.sessionId];
+      }
+
+      return {
+        chatTabs: nextTabs,
+        sessions: nextSessions,
+        activeChatTabId:
+          current.activeChatTabId === tabId ? null : current.activeChatTabId,
+      };
     });
   },
 
-  sendPrompt: async (rawText) => {
-    const state = get();
+  switchTab: (tabId) => {
+    set({ activeChatTabId: tabId });
+  },
+
+  sendPrompt: async (sessionId, rawText) => {
     const text = rawText.trim();
     if (!text) return;
+
+    let session = get().sessions[sessionId];
+    if (!session) return;
+
+    // If currently responding, cancel first
+    if (session.isResponding) {
+      await get().cancelPrompt(sessionId);
+      session = get().sessions[sessionId];
+      if (!session) return;
+    }
+
+    // Sync mode if changed
     if (
-      !state.activeAgentId ||
-      !state.activeSessionId ||
-      state.connectionStatus !== "connected"
+      session.currentModeId !== null &&
+      session.currentModeId !== session.lastSentModeId
     ) {
-      return;
+      try {
+        await invoke("acp_set_mode", {
+          agentId: session.agentId,
+          sessionId,
+          modeId: session.currentModeId,
+        });
+        updateSession(set, sessionId, {
+          lastSentModeId: session.currentModeId,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "failed to set mode";
+        toast.error("mode sync failed", { description: message });
+        return;
+      }
     }
-    if (state.isResponding) {
-      return;
+
+    // Re-read after mode sync
+    session = get().sessions[sessionId];
+    if (!session) return;
+
+    // Sync model if changed
+    if (
+      session.currentModelId !== null &&
+      session.currentModelId !== session.lastSentModelId
+    ) {
+      try {
+        await invoke("acp_set_model", {
+          agentId: session.agentId,
+          sessionId,
+          modelId: session.currentModelId,
+        });
+        updateSession(set, sessionId, {
+          lastSentModelId: session.currentModelId,
+        });
+      } catch (error) {
+        const message =
+          error instanceof Error ? error.message : "failed to set model";
+        toast.error("model sync failed", { description: message });
+        return;
+      }
     }
+
+    // Re-read after model sync to get fresh agentId for the invoke call
+    session = get().sessions[sessionId];
+    if (!session) return;
 
     const userMessageId = createId();
     const assistantMessageId = createId();
@@ -819,20 +910,25 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       isStreaming: true,
     };
 
-    set((current) => ({
+    updateSession(set, sessionId, (s) => ({
       inputText: "",
       isResponding: true,
-      pendingPermission: null,
-      messages: [...current.messages, userMessage, assistantMessage],
+      pendingPermissions: [],
+      messages: [...s.messages, userMessage, assistantMessage],
     }));
 
     const onEvent = new Channel<AgentEvent>();
     onEvent.onmessage = (event) => {
-      switch (event.event) {
-        case "messageChunk":
-          set((current) => ({
-            messages: updateAssistantMessage(
-              current.messages,
+      set((current) => {
+        const sess = current.sessions[sessionId];
+        if (!sess) return {};
+
+        const updated = { ...sess };
+
+        switch (event.event) {
+          case "messageChunk":
+            updated.messages = updateAssistantMessage(
+              sess.messages,
               assistantMessageId,
               (message) => {
                 const segments = [...message.segments];
@@ -851,25 +947,21 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                   segments,
                 };
               },
-            ),
-          }));
-          break;
-        case "thinkingChunk":
-          set((current) => ({
-            messages: updateAssistantMessage(
-              current.messages,
+            );
+            break;
+          case "thinkingChunk":
+            updated.messages = updateAssistantMessage(
+              sess.messages,
               assistantMessageId,
               (message) => ({
                 ...message,
                 thinking: `${message.thinking}${event.data.text}`,
               }),
-            ),
-          }));
-          break;
-        case "toolCallUpdate":
-          set((current) => ({
-            messages: updateAssistantMessage(
-              current.messages,
+            );
+            break;
+          case "toolCallUpdate":
+            updated.messages = updateAssistantMessage(
+              sess.messages,
               assistantMessageId,
               (message) => {
                 const existing = message.toolCalls.find(
@@ -905,13 +997,11 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                   segments,
                 };
               },
-            ),
-          }));
-          break;
-        case "planUpdate":
-          set((current) => ({
-            messages: updateAssistantMessage(
-              current.messages,
+            );
+            break;
+          case "planUpdate":
+            updated.messages = updateAssistantMessage(
+              sess.messages,
               assistantMessageId,
               (message) => ({
                 ...message,
@@ -920,49 +1010,43 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                   status: normalizePlanStatus(entry.status),
                 })),
               }),
-            ),
-          }));
-          break;
-        case "permissionRequest":
-          set({
-            pendingPermission: {
-              requestId: event.data.requestId,
-              toolCallId: event.data.toolCallId,
-              options: event.data.options.map((option) => ({
-                optionId: option.optionId,
-                name: option.name,
-                kind: option.kind,
-              })),
-            },
-          });
-          break;
-        case "modeUpdate":
-          set({
-            currentModeId: event.data.currentModeId,
-          });
-          break;
-        case "commandsUpdate":
-          set({
-            availableCommands: event.data.commands,
-          });
-          break;
-        case "done":
-          set((current) => ({
-            isResponding: false,
-            pendingPermission: null,
-            messages: updateAssistantMessage(
-              current.messages,
+            );
+            break;
+          case "permissionRequest":
+            updated.pendingPermissions = [
+              ...sess.pendingPermissions,
+              {
+                requestId: event.data.requestId,
+                toolCallId: event.data.toolCallId,
+                options: event.data.options.map((option) => ({
+                  optionId: option.optionId,
+                  name: option.name,
+                  kind: option.kind,
+                })),
+              },
+            ];
+            break;
+          case "modeUpdate":
+            updated.currentModeId = event.data.currentModeId;
+            updated.lastSentModeId = event.data.currentModeId;
+            break;
+          case "commandsUpdate":
+            updated.availableCommands = event.data.commands;
+            break;
+          case "done":
+            updated.isResponding = false;
+            updated.pendingPermissions = [];
+            updated.messages = updateAssistantMessage(
+              updated.messages,
               assistantMessageId,
               finalizeAssistantMessage,
-            ),
-          }));
-          break;
-        case "error":
-          set((current) => ({
-            isResponding: false,
-            pendingPermission: null,
-            messages: updateAssistantMessage(
-              current.messages,
+            );
+            break;
+          case "error":
+            updated.isResponding = false;
+            updated.pendingPermissions = [];
+            updated.messages = updateAssistantMessage(
+              updated.messages,
               assistantMessageId,
               (message) =>
                 finalizeAssistantMessage({
@@ -971,27 +1055,31 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                     ? `${message.content}\n\n${event.data.message}`
                     : event.data.message,
                 }),
-            ),
-          }));
-          break;
-      }
+            );
+            break;
+        }
+
+        return {
+          sessions: { ...current.sessions, [sessionId]: updated },
+        };
+      });
     };
 
     try {
       await invoke("acp_prompt", {
-        agentId: state.activeAgentId,
-        sessionId: state.activeSessionId,
+        agentId: session.agentId,
+        sessionId,
         text,
         onEvent,
       });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "failed to send prompt";
-      set((current) => ({
+      updateSession(set, sessionId, (s) => ({
         isResponding: false,
-        pendingPermission: null,
+        pendingPermissions: [],
         messages: updateAssistantMessage(
-          current.messages,
+          s.messages,
           assistantMessageId,
           (messageState) =>
             finalizeAssistantMessage({
@@ -1005,17 +1093,21 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }
   },
 
-  respondPermission: async (requestId, optionId) => {
-    const { activeAgentId } = get();
-    if (!activeAgentId) return;
+  respondPermission: async (sessionId, requestId, optionId) => {
+    const session = get().sessions[sessionId];
+    if (!session) return;
 
     try {
       await invoke("acp_respond_permission", {
-        agentId: activeAgentId,
+        agentId: session.agentId,
         requestId,
         optionId,
       });
-      set({ pendingPermission: null });
+      updateSession(set, sessionId, (s) => ({
+        pendingPermissions: s.pendingPermissions.filter(
+          (p) => p.requestId !== requestId,
+        ),
+      }));
     } catch (error) {
       const message =
         error instanceof Error
@@ -1025,18 +1117,16 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }
   },
 
-  cancelPrompt: async () => {
-    const { activeAgentId, activeSessionId } = get();
-    if (!activeAgentId || !activeSessionId) return;
+  cancelPrompt: async (sessionId) => {
+    const session = get().sessions[sessionId];
+    if (!session || !session.isResponding) return;
 
     try {
       await invoke("acp_cancel", {
-        agentId: activeAgentId,
-        sessionId: activeSessionId,
+        agentId: session.agentId,
+        sessionId,
       });
-      set({
-        pendingPermission: null,
-      });
+      updateSession(set, sessionId, { pendingPermissions: [] });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "failed to cancel prompt";
@@ -1045,129 +1135,111 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
 
   newChat: async () => {
-    const { activeAgentId, activeSessionId, connectionStatus, isResponding } =
-      get();
-    if (!activeAgentId || connectionStatus !== "connected") {
-      set({ messages: [] });
+    const state = get();
+    const activeTab = state.chatTabs.find(
+      (t) => t.id === state.activeChatTabId,
+    );
+    if (!activeTab) return;
+
+    const agentConfigId = activeTab.agentConfigId;
+    const activeSession = activeTab.sessionId
+      ? state.sessions[activeTab.sessionId]
+      : null;
+    const agentId = activeSession?.agentId;
+
+    if (!agentId) {
+      // No existing session, run full connect flow
+      await get().connect(agentConfigId);
       return;
     }
 
-    set({
-      isCreatingSession: true,
-      isResponding: false,
-      pendingPermission: null,
-      messages: [],
-    });
+    const tabId = createId();
+    const agent = state.agents.find((a) => a.id === agentConfigId);
+    const tab: ChatTab = {
+      id: tabId,
+      sessionId: null,
+      agentConfigId,
+      label: agent?.name ?? activeSession?.agentName ?? "ai agent",
+      isConnecting: true,
+      connectionError: null,
+    };
 
-    if (isResponding && activeSessionId) {
-      try {
-        await invoke("acp_cancel", {
-          agentId: activeAgentId,
-          sessionId: activeSessionId,
-        });
-      } catch {
-        // ignore cancel errors
-      }
-    }
+    set((current) => ({
+      chatTabs: [...current.chatTabs, tab],
+      activeChatTabId: tabId,
+    }));
 
     try {
       const cwd = await getBaseDir();
+      const session = await invoke<SessionInfoResponse>("acp_new_session", {
+        agentId,
+        cwd,
+      });
 
-      // After cancelling a prompt, the backend needs a moment to finish
-      // processing the cancellation before accepting a new session.
-      // Retry a few times with a short delay.
-      let session: SessionInfoResponse | null = null;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        try {
-          session = await invoke<SessionInfoResponse>("acp_new_session", {
-            agentId: activeAgentId,
-            cwd,
-          });
-          break;
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          if (attempt < 4 && msg.includes("while a prompt is running")) {
-            await new Promise((r) => setTimeout(r, 200));
-            continue;
-          }
-          throw err;
-        }
-      }
+      if (!get().chatTabs.some((t) => t.id === tabId)) return;
 
-      if (!session) {
-        throw new Error("failed to create new session after retries");
-      }
-
-      set({
-        activeSessionId: session.sessionId,
+      const chatSession: ChatSession = {
+        sessionId: session.sessionId,
+        agentId,
+        agentName: activeSession?.agentName ?? agent?.name ?? "ai agent",
+        agentConfigId,
         messages: [],
-        pendingPermission: null,
         isResponding: false,
-        isCreatingSession: false,
+        pendingPermissions: [],
+        inputText: "",
         availableModes: session.availableModes ?? [],
         currentModeId:
+          session.currentModeId ?? session.availableModes?.[0]?.id ?? null,
+        lastSentModeId:
           session.currentModeId ?? session.availableModes?.[0]?.id ?? null,
         availableCommands:
           session.availableCommands?.length > 0
             ? session.availableCommands
-            : get().availableCommands,
+            : (activeSession?.availableCommands ?? []),
         availableModels: session.availableModels ?? [],
         currentModelId: session.currentModelId ?? null,
-      });
+        lastSentModelId: session.currentModelId ?? null,
+      };
+
+      set((current) => ({
+        sessions: {
+          ...current.sessions,
+          [session.sessionId]: chatSession,
+        },
+        chatTabs: current.chatTabs.map((t) =>
+          t.id === tabId
+            ? {
+                ...t,
+                sessionId: session.sessionId,
+                isConnecting: false,
+                connectionError: null,
+              }
+            : t,
+        ),
+      }));
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "failed to start new chat";
-      set({
-        isCreatingSession: false,
-        connectionStatus: "error",
-        connectionError: { kind: "unknown", message },
+      if (!get().chatTabs.some((t) => t.id === tabId)) return;
+      const connectionError = parseConnectionError(error);
+      set((current) => ({
+        chatTabs: current.chatTabs.map((t) =>
+          t.id === tabId ? { ...t, isConnecting: false, connectionError } : t,
+        ),
+      }));
+      toast.error("failed to start new chat", {
+        description: connectionError.message,
       });
     }
   },
 
-  setCurrentModeId: (modeId) => {
-    set({ currentModeId: modeId });
-    const { activeAgentId, activeSessionId, connectionStatus } = get();
-    if (
-      !modeId ||
-      !activeAgentId ||
-      !activeSessionId ||
-      connectionStatus !== "connected"
-    ) {
-      return;
-    }
-    void invoke("acp_set_mode", {
-      agentId: activeAgentId,
-      sessionId: activeSessionId,
-      modeId,
-    }).catch((error) => {
-      const message =
-        error instanceof Error ? error.message : "failed to set mode";
-      toast.error("mode update failed", { description: message });
-    });
+  setMode: (sessionId, modeId) => {
+    updateSession(set, sessionId, { currentModeId: modeId });
   },
 
-  setCurrentModelId: (modelId) => {
-    set({ currentModelId: modelId });
-    const { activeAgentId, activeSessionId, connectionStatus } = get();
-    if (
-      !modelId ||
-      !activeAgentId ||
-      !activeSessionId ||
-      connectionStatus !== "connected"
-    ) {
-      return;
-    }
-    void invoke("acp_set_model", {
-      agentId: activeAgentId,
-      sessionId: activeSessionId,
-      modelId,
-    }).catch((error) => {
-      const message =
-        error instanceof Error ? error.message : "failed to set model";
-      toast.error("model update failed", { description: message });
-    });
+  setModel: (sessionId, modelId) => {
+    updateSession(set, sessionId, { currentModelId: modelId });
   },
 
-  setInputText: (text) => set({ inputText: text }),
+  setInputText: (sessionId, text) => {
+    updateSession(set, sessionId, { inputText: text });
+  },
 }));

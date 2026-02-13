@@ -113,24 +113,29 @@ function SelectorCombobox({
 }
 
 export function ChatInput() {
-  const connectionStatus = useAgentStore((s) => s.connectionStatus);
-  const inputText = useAgentStore((s) => s.inputText);
-  const availableModes = useAgentStore((s) => s.availableModes);
-  const currentModeId = useAgentStore((s) => s.currentModeId);
-  const availableModels = useAgentStore((s) => s.availableModels);
-  const currentModelId = useAgentStore((s) => s.currentModelId);
-  const availableCommands = useAgentStore((s) => s.availableCommands);
-  const isResponding = useAgentStore((s) => s.isResponding);
-  const isCreatingSession = useAgentStore((s) => s.isCreatingSession);
-  const setInputText = useAgentStore((s) => s.setInputText);
-  const setCurrentModeId = useAgentStore((s) => s.setCurrentModeId);
-  const setCurrentModelId = useAgentStore((s) => s.setCurrentModelId);
-  const sendPrompt = useAgentStore((s) => s.sendPrompt);
-  const cancelPrompt = useAgentStore((s) => s.cancelPrompt);
+  const activeTab = useAgentStore((s) =>
+    s.chatTabs.find((t) => t.id === s.activeChatTabId),
+  );
+  const session = useAgentStore((s) => {
+    const tab = s.chatTabs.find((t) => t.id === s.activeChatTabId);
+    return tab?.sessionId ? s.sessions[tab.sessionId] : null;
+  });
+  const sendPromptAction = useAgentStore((s) => s.sendPrompt);
+  const cancelPromptAction = useAgentStore((s) => s.cancelPrompt);
+  const setInputTextAction = useAgentStore((s) => s.setInputText);
+  const setModeAction = useAgentStore((s) => s.setMode);
+  const setModelAction = useAgentStore((s) => s.setModel);
 
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
 
-  const disabled = connectionStatus !== "connected" || isCreatingSession;
+  const disabled = !session || (activeTab?.isConnecting ?? false);
+  const inputText = session?.inputText ?? "";
+  const isResponding = session?.isResponding ?? false;
+  const availableModes = session?.availableModes ?? [];
+  const currentModeId = session?.currentModeId ?? null;
+  const availableModels = session?.availableModels ?? [];
+  const currentModelId = session?.currentModelId ?? null;
+  const availableCommands = session?.availableCommands ?? [];
 
   const slashQuery = useMemo(() => {
     if (!inputText.startsWith("/")) return null;
@@ -156,14 +161,16 @@ export function ChatInput() {
   }, [slashQuery, filteredCommands.length]);
 
   const applySlashCommand = (commandName: string) => {
-    setInputText(`/${commandName} `);
+    if (session) {
+      setInputTextAction(session.sessionId, `/${commandName} `);
+    }
   };
 
   const submitPrompt = () => {
-    if (disabled || isResponding) return;
+    if (disabled || isResponding || !session) return;
     const text = inputText.trim();
     if (!text) return;
-    void sendPrompt(text);
+    void sendPromptAction(session.sessionId, text);
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -194,7 +201,12 @@ export function ChatInput() {
     }
     if (event.key === "Escape" && showSlashMenu) {
       event.preventDefault();
-      setInputText(inputText.endsWith(" ") ? inputText : `${inputText} `);
+      if (session) {
+        setInputTextAction(
+          session.sessionId,
+          inputText.endsWith(" ") ? inputText : `${inputText} `,
+        );
+      }
     }
   };
 
@@ -250,21 +262,27 @@ export function ChatInput() {
         <InputGroup className="bg-transparent dark:bg-transparent rounded-xl">
           <TextareaAutosize
             data-slot="input-group-control"
-            className="field-sizing-content min-h-15 w-full resize-none rounded-md bg-transparent p-4 text-sm transition-[color,box-shadow] outline-none disabled:cursor-not-allowed disabled:opacity-50"
+            className="field-sizing-content min-h-15 w-full resize-none rounded-md bg-transparent p-4 text-sm leading-relaxed transition-[color,box-shadow] outline-none disabled:cursor-not-allowed disabled:opacity-50"
             value={inputText}
             disabled={disabled}
             placeholder={
               disabled ? "starting session..." : "ask ai anything..."
             }
             maxRows={MAX_ROWS}
-            onChange={(event) => setInputText(event.target.value)}
+            onChange={(event) => {
+              if (session) {
+                setInputTextAction(session.sessionId, event.target.value);
+              }
+            }}
             onKeyDown={handleKeyDown}
           />
           <InputGroupAddon align="block-end">
             <SelectorCombobox
               items={modeItems}
               selectedId={currentModeId}
-              onSelect={setCurrentModeId}
+              onSelect={(id) => {
+                if (session) setModeAction(session.sessionId, id);
+              }}
               label="mode"
               disabled={disabled}
             />
@@ -273,7 +291,9 @@ export function ChatInput() {
               <SelectorCombobox
                 items={modelItems}
                 selectedId={currentModelId}
-                onSelect={setCurrentModelId}
+                onSelect={(id) => {
+                  if (session) setModelAction(session.sessionId, id);
+                }}
                 label="model"
                 disabled={disabled}
               />
@@ -284,9 +304,13 @@ export function ChatInput() {
               size="icon-sm"
               variant="default"
               disabled={disabled}
-              onClick={() =>
-                isResponding ? void cancelPrompt() : submitPrompt()
-              }
+              onClick={() => {
+                if (isResponding && session) {
+                  void cancelPromptAction(session.sessionId);
+                } else {
+                  submitPrompt();
+                }
+              }}
             >
               {isResponding ? (
                 <Square className="h-3.5 w-3.5" />

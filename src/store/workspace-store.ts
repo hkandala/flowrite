@@ -127,7 +127,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   leftPanelVisible: true,
   rightPanelVisible: true,
   leftPanelWidth: 300,
-  rightPanelWidth: 350,
+  rightPanelWidth: 375,
   editorMaximized: false,
   activeFilePath: null,
   dirtyPanels: new Set<string>(),

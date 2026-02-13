@@ -7,16 +7,27 @@ import { CommentsPane } from "./comments-pane";
 export function RightPanel() {
   const rightPanelTab = useWorkspaceStore((s) => s.rightPanelTab);
   const setRightPanelTab = useWorkspaceStore((s) => s.setRightPanelTab);
-  const connectionStatus = useAgentStore((s) => s.connectionStatus);
 
-  const statusDotClass =
-    connectionStatus === "connected"
-      ? "bg-emerald-500"
-      : connectionStatus === "connecting"
-        ? "bg-amber-500"
-        : connectionStatus === "error"
-          ? "bg-red-500"
-          : "bg-zinc-500";
+  const activeTab = useAgentStore((s) =>
+    s.chatTabs.find((t) => t.id === s.activeChatTabId),
+  );
+  const session = useAgentStore((s) => {
+    const tab = s.chatTabs.find((t) => t.id === s.activeChatTabId);
+    return tab?.sessionId ? s.sessions[tab.sessionId] : null;
+  });
+
+  const hasTab = !!activeTab;
+  const isConnecting = activeTab?.isConnecting ?? false;
+  const hasError = !!activeTab?.connectionError;
+  const isConnected = hasTab && !isConnecting && !hasError && !!session;
+
+  const statusDotClass = isConnected
+    ? "bg-emerald-500"
+    : isConnecting
+      ? "bg-amber-500"
+      : hasError
+        ? "bg-red-500"
+        : "bg-zinc-500";
 
   return (
     <Tabs

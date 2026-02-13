@@ -202,24 +202,25 @@ enum AgentCommand {
     },
 }
 
-struct ActivePrompt {
-    agent_id: String,
+#[allow(dead_code)]
+struct ActivePromptHandle {
     session_id: String,
-    on_event: Channel<AgentEvent>,
-    respond_to: Option<oneshot::Sender<Result<(), String>>>,
-    tool_calls: HashMap<String, ToolCall>,
-    update_count: usize,
-    saw_visible_output: bool,
+}
+
+struct PendingPermission {
+    session_id: String,
+    decision_tx: oneshot::Sender<Option<String>>,
 }
 
 #[derive(Default)]
 struct RuntimeShared {
-    active_stream: Option<ActiveStream>,
-    pending_permissions: HashMap<String, oneshot::Sender<Option<String>>>,
+    active_streams: HashMap<String, ActiveStream>,
+    pending_permissions: HashMap<String, PendingPermission>,
     next_permission_request_id: u64,
 }
 
 #[derive(Clone)]
+#[allow(dead_code)]
 struct ActiveStream {
     session_id: String,
     channel: Channel<AgentEvent>,
@@ -749,444 +750,510 @@ async fn run_agent_command_loop(
 
     let mut sessions: HashMap<String, sacp::ActiveSession<'static, sacp::link::ClientToAgent>> =
         HashMap::new();
-    let mut active_prompt: Option<ActivePrompt> = None;
+    let mut active_prompts: HashMap<String, ActivePromptHandle> = HashMap::new();
+    let (session_return_tx, mut session_return_rx) = mpsc::channel::<(
+        String,
+        sacp::ActiveSession<'static, sacp::link::ClientToAgent>,
+    )>(16);
 
     loop {
-        if let Some(prompt) = active_prompt.as_mut() {
-            let Some(session) = sessions.get_mut(&prompt.session_id) else {
-                let message = format!("session '{}' not found", prompt.session_id);
-                log::error!(
-                    "[acp][{}][session:{}] prompt session missing while streaming",
-                    prompt.agent_id,
-                    prompt.session_id
-                );
-                let _ = prompt
-                    .on_event
-                    .send(AgentEvent::Error {
-                        message: message.clone(),
-                    })
-                    .map_err(|e| log::warn!("failed to stream error event: {e}"));
-                complete_prompt(prompt, Err(message));
-                clear_active_stream(&shared).await;
-                active_prompt = None;
-                continue;
-            };
-
-            tokio::select! {
-                maybe_command = command_rx.recv() => {
-                    let Some(command) = maybe_command else {
-                        log::info!("[acp][{}] command channel closed while prompt was active", prompt.agent_id);
-                        break;
-                    };
-                    handle_command_while_prompt_running(&cx, &shared, prompt, &info, command).await;
-                }
-                update = session.read_update() => {
-                    match update {
-                        Ok(SessionMessage::SessionMessage(message_cx)) => {
-                            let handled = MatchMessage::new(message_cx)
-                                .if_notification(async |notification: SessionNotification| {
-                                    handle_session_notification(prompt, notification)?;
-                                    Ok(())
-                                })
-                                .await
-                                .otherwise_ignore();
-
-                            if let Err(error) = handled {
-                                log::error!(
-                                    "[acp][{}][session:{}] failed to process session/update: {error}",
-                                    prompt.agent_id,
-                                    prompt.session_id
+        tokio::select! {
+            maybe_command = command_rx.recv() => {
+                let Some(command) = maybe_command else {
+                    log::info!("[acp][{agent_id}] command channel closed, shutting down loop");
+                    break;
+                };
+                match command {
+                    AgentCommand::GetInfo { respond_to } => {
+                        log::info!("[acp][{agent_id}] -> get_info");
+                        let _ = respond_to.send(Ok(info.clone()));
+                        log::info!("[acp][{agent_id}] <- get_info {}", to_json_log(&info));
+                    }
+                    AgentCommand::NewSession { cwd, respond_to } => {
+                        log::info!(
+                            "[acp][{agent_id}] -> session/new {}",
+                            to_json_log(&serde_json::json!({ "cwd": cwd.clone() }))
+                        );
+                        let session = cx
+                            .build_session(PathBuf::from(cwd.clone()))
+                            .block_task()
+                            .start_session()
+                            .await;
+                        match session {
+                            Ok(session) => {
+                                let session_id = session.session_id().0.to_string();
+                                // Brief yield to let the I/O task process any notifications
+                                // that arrive right after session/new (e.g., available_commands_update)
+                                tokio::time::sleep(Duration::from_millis(100)).await;
+                                let wire_models = captured_models
+                                    .lock()
+                                    .ok()
+                                    .and_then(|mut guard| guard.take());
+                                let wire_commands = captured_commands
+                                    .lock()
+                                    .ok()
+                                    .and_then(|mut guard| guard.take());
+                                let session_info =
+                                    to_session_info(&session, wire_models, wire_commands);
+                                sessions.insert(session_id, session);
+                                log::info!(
+                                    "[acp][{agent_id}] <- session/new {}",
+                                    to_json_log(&session_info)
                                 );
-                                let message = format!("failed to handle session update: {error}");
-                                let _ = prompt.on_event.send(AgentEvent::Error {
-                                    message: message.clone(),
-                                });
-                                complete_prompt(prompt, Err(message));
-                                clear_active_stream(&shared).await;
-                                active_prompt = None;
+                                let _ = respond_to.send(Ok(session_info));
+                            }
+                            Err(error) => {
+                                log::error!("[acp][{agent_id}] <- session/new error: {error}");
+                                let conn_err = sacp_error_to_connection_error(&error);
+                                let _ = respond_to.send(Err(connection_error_to_string(&conn_err)));
                             }
                         }
-                        Ok(SessionMessage::StopReason(stop_reason)) => {
-                            let stop_reason_text = stop_reason_to_string(stop_reason);
-                            log::info!(
-                                "[acp][{}][session:{}] <- session/prompt stop_reason={} updates={} visible_output={}",
-                                prompt.agent_id,
-                                prompt.session_id,
-                                stop_reason_text,
-                                prompt.update_count,
-                                prompt.saw_visible_output
+                    }
+                    AgentCommand::Prompt {
+                        session_id,
+                        text,
+                        on_event,
+                        respond_to,
+                    } => {
+                        if active_prompts.contains_key(&session_id) {
+                            log::warn!(
+                                "[acp][{agent_id}][session:{session_id}] reject prompt: prompt already in progress"
                             );
-                            if !prompt.saw_visible_output {
-                                let message = format!(
-                                    "agent finished with stop reason '{}' but produced no visible output. check ACP logs for upstream provider/model errors.",
-                                    stop_reason_text
-                                );
-                                log::warn!(
-                                    "[acp][{}][session:{}] {}",
-                                    prompt.agent_id,
-                                    prompt.session_id,
-                                    message
-                                );
-                                let _ = prompt.on_event.send(AgentEvent::Error {
-                                    message: message.clone(),
-                                });
-                            }
-                            let _ = prompt.on_event.send(AgentEvent::Done {
-                                stop_reason: stop_reason_text,
-                            });
-                            complete_prompt(prompt, Ok(()));
-                            clear_active_stream(&shared).await;
-                            active_prompt = None;
+                            let _ = respond_to.send(Err("prompt already in progress".to_string()));
+                            continue;
                         }
-                        Err(error) => {
+                        if text.trim().is_empty() {
+                            log::warn!("[acp][{agent_id}][session:{session_id}] rejected empty prompt");
+                            let _ = respond_to.send(Err("prompt text cannot be empty".to_string()));
+                            continue;
+                        }
+                        let Some(session) = sessions.remove(&session_id) else {
                             log::error!(
-                                "[acp][{}][session:{}] failed while reading prompt updates: {error}",
-                                prompt.agent_id,
-                                prompt.session_id
+                                "[acp][{agent_id}] prompt requested unknown session_id={session_id}"
                             );
-                            let message = format!("failed reading prompt updates: {error}");
-                            let _ = prompt.on_event.send(AgentEvent::Error {
-                                message: message.clone(),
-                            });
-                            complete_prompt(prompt, Err(message));
-                            clear_active_stream(&shared).await;
-                            active_prompt = None;
+                            let _ = respond_to.send(Err(format!("session '{session_id}' not found")));
+                            continue;
+                        };
+                        let preview = summarize_text_for_log(&text, ACP_PROMPT_PREVIEW_CHARS);
+                        let chars = text.chars().count();
+                        log::info!(
+                            "[acp][{agent_id}][session:{session_id}] -> session/prompt chars={chars} preview={preview}"
+                        );
+
+                        set_active_stream_for_session(
+                            &shared,
+                            session_id.clone(),
+                            on_event.clone(),
+                        )
+                        .await;
+                        active_prompts.insert(
+                            session_id.clone(),
+                            ActivePromptHandle {
+                                session_id: session_id.clone(),
+                            },
+                        );
+
+                        let task_agent_id = agent_id.clone();
+                        let task_session_id = session_id.clone();
+                        let task_shared = shared.clone();
+                        let task_return_tx = session_return_tx.clone();
+                        tauri::async_runtime::spawn(async move {
+                            prompt_reader_task(
+                                task_agent_id,
+                                task_session_id,
+                                session,
+                                text,
+                                on_event,
+                                respond_to,
+                                task_shared,
+                                task_return_tx,
+                            )
+                            .await;
+                        });
+                    }
+                    AgentCommand::RespondPermission {
+                        request_id,
+                        option_id,
+                        respond_to,
+                    } => {
+                        log::info!(
+                            "[acp][{agent_id}] -> permission/respond request_id={request_id} option_id={option_id}"
+                        );
+                        let result =
+                            resolve_permission_selection(&shared, request_id, Some(option_id)).await;
+                        match &result {
+                            Ok(()) => log::info!("[acp][{agent_id}] <- permission/respond completed"),
+                            Err(error) => {
+                                log::warn!("[acp][{agent_id}] <- permission/respond error: {error}")
+                            }
                         }
-                        Ok(_) => {}
+                        let _ = respond_to.send(result);
+                    }
+                    AgentCommand::Cancel {
+                        session_id,
+                        respond_to,
+                    } => {
+                        log::info!("[acp][{agent_id}][session:{session_id}] -> session/cancel");
+                        let send_result = cx
+                            .send_notification(CancelNotification::new(session_id.clone()))
+                            .map_err(|error| error.to_string());
+                        cancel_pending_permissions_for_session(&shared, &session_id).await;
+                        match &send_result {
+                            Ok(()) => {
+                                log::info!("[acp][{agent_id}][session:{session_id}] <- session/cancel ok")
+                            }
+                            Err(error) => log::warn!(
+                                "[acp][{agent_id}][session:{session_id}] <- session/cancel error: {error}"
+                            ),
+                        }
+                        let _ = respond_to.send(send_result);
+                    }
+                    AgentCommand::SetMode {
+                        session_id,
+                        mode_id,
+                        respond_to,
+                    } => {
+                        if active_prompts.contains_key(&session_id) {
+                            log::warn!(
+                                "[acp][{agent_id}][session:{session_id}] reject mode change while prompt running"
+                            );
+                            let _ = respond_to.send(Err(
+                                "cannot change mode while a prompt is running".to_string()
+                            ));
+                            continue;
+                        }
+                        log::info!(
+                            "[acp][{agent_id}][session:{session_id}] -> session/set_mode mode_id={mode_id}"
+                        );
+                        let mode_result = cx
+                            .send_request(SetSessionModeRequest::new(
+                                session_id.clone(),
+                                mode_id.clone(),
+                            ))
+                            .block_task()
+                            .await
+                            .map_err(|error| error.to_string())
+                            .map(|_| ());
+                        match &mode_result {
+                            Ok(()) => log::info!(
+                                "[acp][{agent_id}][session:{session_id}] <- session/set_mode mode_id={mode_id} ok"
+                            ),
+                            Err(error) => log::warn!(
+                                "[acp][{agent_id}][session:{session_id}] <- session/set_mode mode_id={mode_id} error: {error}"
+                            ),
+                        }
+                        let _ = respond_to.send(mode_result);
+                    }
+                    AgentCommand::SetModel {
+                        session_id,
+                        model_id,
+                        respond_to,
+                    } => {
+                        if active_prompts.contains_key(&session_id) {
+                            log::warn!(
+                                "[acp][{agent_id}][session:{session_id}] reject model change while prompt running"
+                            );
+                            let _ = respond_to.send(Err(
+                                "cannot change model while a prompt is running".to_string()
+                            ));
+                            continue;
+                        }
+                        log::info!(
+                            "[acp][{agent_id}][session:{session_id}] -> session/set_model model_id={model_id}"
+                        );
+                        let model_result = cx
+                            .send_request(SetSessionModelRequest {
+                                session_id: session_id.clone(),
+                                model_id: model_id.clone(),
+                            })
+                            .block_task()
+                            .await
+                            .map_err(|error| error.to_string())
+                            .map(|_| ());
+                        match &model_result {
+                            Ok(()) => log::info!(
+                                "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} ok"
+                            ),
+                            Err(error) => log::warn!(
+                                "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} error: {error}"
+                            ),
+                        }
+                        let _ = respond_to.send(model_result);
                     }
                 }
             }
-        } else {
-            let Some(command) = command_rx.recv().await else {
-                log::info!("[acp][{agent_id}] command channel closed, shutting down loop");
-                break;
-            };
-            match command {
-                AgentCommand::GetInfo { respond_to } => {
-                    log::info!("[acp][{agent_id}] -> get_info");
-                    let _ = respond_to.send(Ok(info.clone()));
-                    log::info!("[acp][{agent_id}] <- get_info {}", to_json_log(&info));
-                }
-                AgentCommand::NewSession { cwd, respond_to } => {
-                    log::info!(
-                        "[acp][{agent_id}] -> session/new {}",
-                        to_json_log(&serde_json::json!({ "cwd": cwd.clone() }))
-                    );
-                    let session = cx
-                        .build_session(PathBuf::from(cwd.clone()))
-                        .block_task()
-                        .start_session()
-                        .await;
-                    match session {
-                        Ok(session) => {
-                            let session_id = session.session_id().0.to_string();
-                            // Brief yield to let the I/O task process any notifications
-                            // that arrive right after session/new (e.g., available_commands_update)
-                            tokio::time::sleep(Duration::from_millis(100)).await;
-                            let wire_models = captured_models
-                                .lock()
-                                .ok()
-                                .and_then(|mut guard| guard.take());
-                            let wire_commands = captured_commands
-                                .lock()
-                                .ok()
-                                .and_then(|mut guard| guard.take());
-                            let session_info =
-                                to_session_info(&session, wire_models, wire_commands);
-                            sessions.insert(session_id, session);
-                            log::info!(
-                                "[acp][{agent_id}] <- session/new {}",
-                                to_json_log(&session_info)
-                            );
-                            let _ = respond_to.send(Ok(session_info));
-                        }
-                        Err(error) => {
-                            log::error!("[acp][{agent_id}] <- session/new error: {error}");
-                            let conn_err = sacp_error_to_connection_error(&error);
-                            let _ = respond_to.send(Err(connection_error_to_string(&conn_err)));
-                        }
-                    }
-                }
-                AgentCommand::Prompt {
-                    session_id,
-                    text,
-                    on_event,
-                    respond_to,
-                } => {
-                    if text.trim().is_empty() {
-                        log::warn!("[acp][{agent_id}][session:{session_id}] rejected empty prompt");
-                        let _ = respond_to.send(Err("prompt text cannot be empty".to_string()));
-                        continue;
-                    }
-                    let Some(session) = sessions.get_mut(&session_id) else {
-                        log::error!(
-                            "[acp][{agent_id}] prompt requested unknown session_id={session_id}"
-                        );
-                        let _ = respond_to.send(Err(format!("session '{session_id}' not found")));
-                        continue;
-                    };
-                    let preview = summarize_text_for_log(&text, ACP_PROMPT_PREVIEW_CHARS);
-                    let chars = text.chars().count();
-                    log::info!(
-                        "[acp][{agent_id}][session:{session_id}] -> session/prompt chars={chars} preview={preview}"
-                    );
-                    match session.send_prompt(text) {
-                        Ok(()) => {
-                            log::info!(
-                                "[acp][{agent_id}][session:{session_id}] session/prompt accepted"
-                            );
-                            set_active_stream(
-                                &shared,
-                                ActiveStream {
-                                    session_id: session_id.clone(),
-                                    channel: on_event.clone(),
-                                },
-                            )
-                            .await;
-                            active_prompt = Some(ActivePrompt {
-                                agent_id: agent_id.clone(),
-                                session_id,
-                                on_event,
-                                respond_to: Some(respond_to),
-                                tool_calls: HashMap::new(),
-                                update_count: 0,
-                                saw_visible_output: false,
-                            });
-                        }
-                        Err(error) => {
-                            log::error!(
-                                "[acp][{agent_id}][session:{session_id}] failed to send prompt: {error}"
-                            );
-                            let _ = respond_to
-                                .send(Err(format!("failed to send prompt to agent: {error}")));
-                        }
-                    }
-                }
-                AgentCommand::RespondPermission {
-                    request_id,
-                    option_id,
-                    respond_to,
-                } => {
-                    log::info!(
-                        "[acp][{agent_id}] -> permission/respond request_id={request_id} option_id={option_id}"
-                    );
-                    let result =
-                        resolve_permission_selection(&shared, request_id, Some(option_id)).await;
-                    match &result {
-                        Ok(()) => log::info!("[acp][{agent_id}] <- permission/respond completed"),
-                        Err(error) => {
-                            log::warn!("[acp][{agent_id}] <- permission/respond error: {error}")
-                        }
-                    }
-                    let _ = respond_to.send(result);
-                }
-                AgentCommand::Cancel {
-                    session_id,
-                    respond_to,
-                } => {
-                    log::info!("[acp][{agent_id}][session:{session_id}] -> session/cancel");
-                    let send_result = cx
-                        .send_notification(CancelNotification::new(session_id.clone()))
-                        .map_err(|error| error.to_string());
-                    cancel_pending_permissions(&shared).await;
-                    match &send_result {
-                        Ok(()) => {
-                            log::info!("[acp][{agent_id}][session:{session_id}] <- session/cancel ok")
-                        }
-                        Err(error) => log::warn!(
-                            "[acp][{agent_id}][session:{session_id}] <- session/cancel error: {error}"
-                        ),
-                    }
-                    let _ = respond_to.send(send_result);
-                }
-                AgentCommand::SetMode {
-                    session_id,
-                    mode_id,
-                    respond_to,
-                } => {
-                    log::info!(
-                        "[acp][{agent_id}][session:{session_id}] -> session/set_mode mode_id={mode_id}"
-                    );
-                    let mode_result = cx
-                        .send_request(SetSessionModeRequest::new(
-                            session_id.clone(),
-                            mode_id.clone(),
-                        ))
-                        .block_task()
-                        .await
-                        .map_err(|error| error.to_string())
-                        .map(|_| ());
-                    match &mode_result {
-                        Ok(()) => log::info!(
-                            "[acp][{agent_id}][session:{session_id}] <- session/set_mode mode_id={mode_id} ok"
-                        ),
-                        Err(error) => log::warn!(
-                            "[acp][{agent_id}][session:{session_id}] <- session/set_mode mode_id={mode_id} error: {error}"
-                        ),
-                    }
-                    let _ = respond_to.send(mode_result);
-                }
-                AgentCommand::SetModel {
-                    session_id,
-                    model_id,
-                    respond_to,
-                } => {
-                    log::info!(
-                        "[acp][{agent_id}][session:{session_id}] -> session/set_model model_id={model_id}"
-                    );
-                    let model_result = cx
-                        .send_request(SetSessionModelRequest {
-                            session_id: session_id.clone(),
-                            model_id: model_id.clone(),
-                        })
-                        .block_task()
-                        .await
-                        .map_err(|error| error.to_string())
-                        .map(|_| ());
-                    match &model_result {
-                        Ok(()) => log::info!(
-                            "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} ok"
-                        ),
-                        Err(error) => log::warn!(
-                            "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} error: {error}"
-                        ),
-                    }
-                    let _ = respond_to.send(model_result);
-                }
+            Some((session_id, session)) = session_return_rx.recv() => {
+                log::info!("[acp][{agent_id}][session:{session_id}] reader task finished, re-inserting session");
+                active_prompts.remove(&session_id);
+                sessions.insert(session_id, session);
             }
         }
     }
 
-    cancel_pending_permissions(&shared).await;
+    cancel_all_pending_permissions(&shared).await;
     log::info!("[acp][{agent_id}] command loop finished");
     Ok(())
 }
 
-fn complete_prompt(prompt: &mut ActivePrompt, result: Result<(), String>) {
-    if let Some(respond_to) = prompt.respond_to.take() {
-        let _ = respond_to.send(result);
+async fn prompt_reader_task(
+    agent_id: String,
+    session_id: String,
+    mut session: sacp::ActiveSession<'static, sacp::link::ClientToAgent>,
+    text: String,
+    on_event: Channel<AgentEvent>,
+    respond_to: oneshot::Sender<Result<(), String>>,
+    shared: Arc<tokio::sync::Mutex<RuntimeShared>>,
+    return_tx: mpsc::Sender<(
+        String,
+        sacp::ActiveSession<'static, sacp::link::ClientToAgent>,
+    )>,
+) {
+    let preview = summarize_text_for_log(&text, ACP_PROMPT_PREVIEW_CHARS);
+    let chars = text.chars().count();
+    log::info!(
+        "[acp][{agent_id}][session:{session_id}] prompt_reader_task started chars={chars} preview={preview}"
+    );
+
+    match session.send_prompt(text) {
+        Ok(()) => {
+            log::info!("[acp][{agent_id}][session:{session_id}] session/prompt accepted");
+        }
+        Err(error) => {
+            log::error!("[acp][{agent_id}][session:{session_id}] failed to send prompt: {error}");
+            let _ = respond_to.send(Err(format!("failed to send prompt to agent: {error}")));
+            clear_active_stream_for_session(&shared, &session_id).await;
+            let _ = return_tx.send((session_id, session)).await;
+            return;
+        }
     }
+
+    let mut tool_calls: HashMap<String, ToolCall> = HashMap::new();
+    let mut update_count: usize = 0;
+    let mut saw_visible_output = false;
+    let mut respond_to = Some(respond_to);
+
+    loop {
+        match session.read_update().await {
+            Ok(SessionMessage::StopReason(stop_reason)) => {
+                let stop_reason_text = stop_reason_to_string(stop_reason);
+                log::info!(
+                    "[acp][{agent_id}][session:{session_id}] <- session/prompt stop_reason={} updates={} visible_output={}",
+                    stop_reason_text,
+                    update_count,
+                    saw_visible_output
+                );
+                if !saw_visible_output {
+                    let message = format!(
+                        "agent finished with stop reason '{}' but produced no visible output. check ACP logs for upstream provider/model errors.",
+                        stop_reason_text
+                    );
+                    log::warn!("[acp][{agent_id}][session:{session_id}] {}", message);
+                    let _ = on_event.send(AgentEvent::Error {
+                        message: message.clone(),
+                    });
+                }
+                let _ = on_event.send(AgentEvent::Done {
+                    stop_reason: stop_reason_text,
+                });
+                if let Some(tx) = respond_to.take() {
+                    let _ = tx.send(Ok(()));
+                }
+                break;
+            }
+            Ok(SessionMessage::SessionMessage(message_cx)) => {
+                update_count += 1;
+                let handled = MatchMessage::new(message_cx)
+                    .if_notification(async |notification: SessionNotification| {
+                        handle_session_notification_in_reader(
+                            &agent_id,
+                            &session_id,
+                            &on_event,
+                            &mut tool_calls,
+                            update_count,
+                            &mut saw_visible_output,
+                            notification,
+                        )?;
+                        Ok(())
+                    })
+                    .await
+                    .otherwise_ignore();
+
+                if let Err(error) = handled {
+                    log::error!(
+                        "[acp][{agent_id}][session:{session_id}] failed to process session/update: {error}"
+                    );
+                    let message = format!("failed to handle session update: {error}");
+                    let _ = on_event.send(AgentEvent::Error {
+                        message: message.clone(),
+                    });
+                    if let Some(tx) = respond_to.take() {
+                        let _ = tx.send(Err(message));
+                    }
+                    break;
+                }
+            }
+            Err(error) => {
+                log::error!(
+                    "[acp][{agent_id}][session:{session_id}] failed while reading prompt updates: {error}"
+                );
+                let message = format!("failed reading prompt updates: {error}");
+                let _ = on_event.send(AgentEvent::Error {
+                    message: message.clone(),
+                });
+                if let Some(tx) = respond_to.take() {
+                    let _ = tx.send(Err(message));
+                }
+                break;
+            }
+            Ok(_) => {}
+        }
+    }
+
+    clear_active_stream_for_session(&shared, &session_id).await;
+    let _ = return_tx.send((session_id, session)).await;
 }
 
-async fn handle_command_while_prompt_running(
-    cx: &sacp::JrConnectionCx<sacp::link::ClientToAgent>,
-    shared: &Arc<tokio::sync::Mutex<RuntimeShared>>,
-    prompt: &mut ActivePrompt,
-    info: &AgentInfo,
-    command: AgentCommand,
-) {
-    match command {
-        AgentCommand::RespondPermission {
-            request_id,
-            option_id,
-            respond_to,
-        } => {
+fn handle_session_notification_in_reader(
+    agent_id: &str,
+    session_id: &str,
+    on_event: &Channel<AgentEvent>,
+    tool_calls: &mut HashMap<String, ToolCall>,
+    update_count: usize,
+    saw_visible_output: &mut bool,
+    notification: SessionNotification,
+) -> Result<(), sacp::Error> {
+    let update_summary = describe_session_update(&notification.update);
+    log::info!(
+        "[acp][{agent_id}][session:{session_id}] <- session/update #{} {} payload={}",
+        update_count,
+        update_summary,
+        to_json_log(&notification)
+    );
+    match notification.update {
+        SessionUpdate::UserMessageChunk(chunk) => {
             log::info!(
-                "[acp][{}][session:{}] -> permission/respond while prompt running request_id={request_id} option_id={option_id}",
-                prompt.agent_id,
-                prompt.session_id
+                "[acp][{agent_id}][session:{session_id}] ignoring user_message_chunk content_type={}",
+                content_block_kind(&chunk.content)
             );
-            let result = resolve_permission_selection(shared, request_id, Some(option_id)).await;
-            match &result {
-                Ok(()) => log::info!(
-                    "[acp][{}][session:{}] <- permission/respond while prompt running completed",
-                    prompt.agent_id,
-                    prompt.session_id
-                ),
-                Err(error) => log::warn!(
-                    "[acp][{}][session:{}] <- permission/respond while prompt running error: {error}",
-                    prompt.agent_id,
-                    prompt.session_id
-                ),
-            }
-            let _ = respond_to.send(result);
         }
-        AgentCommand::Cancel {
-            session_id,
-            respond_to,
-        } => {
-            if session_id != prompt.session_id {
-                log::warn!(
-                    "[acp][{}][session:{}] reject cancel for different session={session_id}",
-                    prompt.agent_id,
-                    prompt.session_id
+        SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
+            ContentBlock::Text(text_content) => {
+                if !text_content.text.is_empty() {
+                    *saw_visible_output = true;
+                }
+                on_event
+                    .send(AgentEvent::MessageChunk {
+                        text: text_content.text,
+                    })
+                    .map_err(sacp::util::internal_error)?;
+            }
+            other => {
+                let placeholder = format!(
+                    "[unsupported agent message content: {}]",
+                    content_block_kind(&other)
                 );
-                let _ = respond_to.send(Err(format!(
-                    "cannot cancel session '{session_id}' while session '{}' is running",
-                    prompt.session_id
-                )));
-                return;
+                *saw_visible_output = true;
+                on_event
+                    .send(AgentEvent::MessageChunk { text: placeholder })
+                    .map_err(sacp::util::internal_error)?;
+                log::warn!(
+                    "[acp][{agent_id}][session:{session_id}] surfaced unsupported content block type={}",
+                    content_block_kind(&other)
+                );
             }
-            log::info!(
-                "[acp][{}][session:{}] -> session/cancel while prompt running",
-                prompt.agent_id,
-                prompt.session_id
-            );
-            let result = cx
-                .send_notification(CancelNotification::new(session_id))
-                .map_err(|error| error.to_string());
-            cancel_pending_permissions(shared).await;
-            match &result {
-                Ok(()) => log::info!(
-                    "[acp][{}][session:{}] <- session/cancel while prompt running ok",
-                    prompt.agent_id,
-                    prompt.session_id
-                ),
-                Err(error) => log::warn!(
-                    "[acp][{}][session:{}] <- session/cancel while prompt running error: {error}",
-                    prompt.agent_id,
-                    prompt.session_id
-                ),
+        },
+        SessionUpdate::AgentThoughtChunk(chunk) => {
+            if let ContentBlock::Text(text_content) = chunk.content {
+                if !text_content.text.is_empty() {
+                    *saw_visible_output = true;
+                }
+                on_event
+                    .send(AgentEvent::ThinkingChunk {
+                        text: text_content.text,
+                    })
+                    .map_err(sacp::util::internal_error)?;
+            } else {
+                log::info!(
+                    "[acp][{agent_id}][session:{session_id}] ignoring non-text thought chunk"
+                );
             }
-            let _ = respond_to.send(result);
         }
-        AgentCommand::GetInfo { respond_to } => {
+        SessionUpdate::ToolCall(tool_call) => {
+            let id = tool_call.tool_call_id.0.to_string();
+            tool_calls.insert(id.clone(), tool_call);
+            if let Some(current) = tool_calls.get(&id) {
+                *saw_visible_output = true;
+                on_event
+                    .send(tool_call_to_event(current))
+                    .map_err(sacp::util::internal_error)?;
+            }
+        }
+        SessionUpdate::ToolCallUpdate(update) => {
+            let id = update.tool_call_id.0.to_string();
+            let tool_call = tool_calls
+                .entry(id.clone())
+                .or_insert_with(|| ToolCall::new(update.tool_call_id.clone(), "tool"));
+            tool_call.update(update.fields);
+            *saw_visible_output = true;
+            on_event
+                .send(tool_call_to_event(tool_call))
+                .map_err(sacp::util::internal_error)?;
+        }
+        SessionUpdate::Plan(plan) => {
+            let entries = plan
+                .entries
+                .into_iter()
+                .map(|entry| PlanEntryInfo {
+                    content: entry.content,
+                    status: plan_entry_status_to_string(entry.status),
+                })
+                .collect();
+            *saw_visible_output = true;
+            on_event
+                .send(AgentEvent::PlanUpdate { entries })
+                .map_err(sacp::util::internal_error)?;
+        }
+        SessionUpdate::CurrentModeUpdate(CurrentModeUpdate {
+            current_mode_id, ..
+        }) => {
+            on_event
+                .send(AgentEvent::ModeUpdate {
+                    current_mode_id: current_mode_id.0.to_string(),
+                })
+                .map_err(sacp::util::internal_error)?;
+        }
+        SessionUpdate::AvailableCommandsUpdate(update) => {
+            let commands = update
+                .available_commands
+                .into_iter()
+                .map(|command| SlashCommandInfo {
+                    name: command.name,
+                    description: command.description,
+                    input_hint: command.input.and_then(|input| match input {
+                        AvailableCommandInput::Unstructured(spec) => Some(spec.hint),
+                        _ => None,
+                    }),
+                })
+                .collect();
+            on_event
+                .send(AgentEvent::CommandsUpdate { commands })
+                .map_err(sacp::util::internal_error)?;
+        }
+        SessionUpdate::ConfigOptionUpdate(update) => {
             log::info!(
-                "[acp][{}][session:{}] -> get_info while prompt running",
-                prompt.agent_id,
-                prompt.session_id
+                "[acp][{agent_id}][session:{session_id}] received config option update count={}",
+                update.config_options.len()
             );
-            let _ = respond_to.send(Ok(info.clone()));
         }
-        AgentCommand::NewSession { respond_to, .. } => {
-            log::warn!(
-                "[acp][{}][session:{}] reject session/new while prompt running",
-                prompt.agent_id,
-                prompt.session_id
+        _ => {
+            log::info!(
+                "[acp][{agent_id}][session:{session_id}] unhandled session update variant: {}",
+                update_summary
             );
-            let _ = respond_to.send(Err(
-                "cannot create a new session while a prompt is running".to_string()
-            ));
-        }
-        AgentCommand::Prompt { respond_to, .. } => {
-            log::warn!(
-                "[acp][{}][session:{}] reject nested prompt while prompt running",
-                prompt.agent_id,
-                prompt.session_id
-            );
-            let _ = respond_to.send(Err("prompt already in progress".to_string()));
-        }
-        AgentCommand::SetMode { respond_to, .. } => {
-            log::warn!(
-                "[acp][{}][session:{}] reject mode change while prompt running",
-                prompt.agent_id,
-                prompt.session_id
-            );
-            let _ = respond_to.send(Err(
-                "cannot change mode while a prompt is running".to_string()
-            ));
-        }
-        AgentCommand::SetModel { respond_to, .. } => {
-            log::warn!(
-                "[acp][{}][session:{}] reject model change while prompt running",
-                prompt.agent_id,
-                prompt.session_id
-            );
-            let _ = respond_to.send(Err(
-                "cannot change model while a prompt is running".to_string()
-            ));
         }
     }
+
+    Ok(())
 }
 
 async fn handle_permission_request(
@@ -1203,34 +1270,37 @@ async fn handle_permission_request(
     let (decision_tx, decision_rx) = oneshot::channel::<Option<String>>();
     let request_id;
     let mut should_wait = false;
+    let request_session_id = request.session_id.0.to_string();
 
     {
         let mut runtime = shared.lock().await;
         runtime.next_permission_request_id += 1;
         request_id = format!("permission-{}", runtime.next_permission_request_id);
 
-        runtime
-            .pending_permissions
-            .insert(request_id.clone(), decision_tx);
+        runtime.pending_permissions.insert(
+            request_id.clone(),
+            PendingPermission {
+                session_id: request_session_id.clone(),
+                decision_tx,
+            },
+        );
 
-        if let Some(stream) = runtime.active_stream.as_ref() {
-            if stream.session_id == request.session_id.0.as_ref() {
-                let event = AgentEvent::PermissionRequest {
-                    request_id: request_id.clone(),
-                    tool_call_id: request.tool_call.tool_call_id.0.to_string(),
-                    options: request
-                        .options
-                        .iter()
-                        .map(|option| PermissionOptionInfo {
-                            option_id: option.option_id.0.to_string(),
-                            name: option.name.clone(),
-                            kind: permission_option_kind_to_string(option.kind),
-                        })
-                        .collect(),
-                };
-                if stream.channel.send(event).is_ok() {
-                    should_wait = true;
-                }
+        if let Some(stream) = runtime.active_streams.get(&request_session_id) {
+            let event = AgentEvent::PermissionRequest {
+                request_id: request_id.clone(),
+                tool_call_id: request.tool_call.tool_call_id.0.to_string(),
+                options: request
+                    .options
+                    .iter()
+                    .map(|option| PermissionOptionInfo {
+                        option_id: option.option_id.0.to_string(),
+                        name: option.name.clone(),
+                        kind: permission_option_kind_to_string(option.kind),
+                    })
+                    .collect(),
+            };
+            if stream.channel.send(event).is_ok() {
+                should_wait = true;
             }
         }
     }
@@ -1275,166 +1345,6 @@ async fn handle_permission_request(
         to_json_log(&response)
     );
     request_cx.respond(response)
-}
-
-fn handle_session_notification(
-    prompt: &mut ActivePrompt,
-    notification: SessionNotification,
-) -> Result<(), sacp::Error> {
-    prompt.update_count += 1;
-    let update_summary = describe_session_update(&notification.update);
-    log::info!(
-        "[acp][{}][session:{}] <- session/update #{} {} payload={}",
-        prompt.agent_id,
-        prompt.session_id,
-        prompt.update_count,
-        update_summary,
-        to_json_log(&notification)
-    );
-    match notification.update {
-        SessionUpdate::UserMessageChunk(chunk) => {
-            log::info!(
-                "[acp][{}][session:{}] ignoring user_message_chunk content_type={}",
-                prompt.agent_id,
-                prompt.session_id,
-                content_block_kind(&chunk.content)
-            );
-        }
-        SessionUpdate::AgentMessageChunk(chunk) => match chunk.content {
-            ContentBlock::Text(text_content) => {
-                if !text_content.text.is_empty() {
-                    prompt.saw_visible_output = true;
-                }
-                prompt
-                    .on_event
-                    .send(AgentEvent::MessageChunk {
-                        text: text_content.text,
-                    })
-                    .map_err(sacp::util::internal_error)?;
-            }
-            other => {
-                let placeholder = format!(
-                    "[unsupported agent message content: {}]",
-                    content_block_kind(&other)
-                );
-                prompt.saw_visible_output = true;
-                prompt
-                    .on_event
-                    .send(AgentEvent::MessageChunk { text: placeholder })
-                    .map_err(sacp::util::internal_error)?;
-                log::warn!(
-                    "[acp][{}][session:{}] surfaced unsupported content block type={}",
-                    prompt.agent_id,
-                    prompt.session_id,
-                    content_block_kind(&other)
-                );
-            }
-        },
-        SessionUpdate::AgentThoughtChunk(chunk) => {
-            if let ContentBlock::Text(text_content) = chunk.content {
-                if !text_content.text.is_empty() {
-                    prompt.saw_visible_output = true;
-                }
-                prompt
-                    .on_event
-                    .send(AgentEvent::ThinkingChunk {
-                        text: text_content.text,
-                    })
-                    .map_err(sacp::util::internal_error)?;
-            } else {
-                log::info!(
-                    "[acp][{}][session:{}] ignoring non-text thought chunk",
-                    prompt.agent_id,
-                    prompt.session_id
-                );
-            }
-        }
-        SessionUpdate::ToolCall(tool_call) => {
-            let id = tool_call.tool_call_id.0.to_string();
-            prompt.tool_calls.insert(id.clone(), tool_call);
-            if let Some(current) = prompt.tool_calls.get(&id) {
-                prompt.saw_visible_output = true;
-                prompt
-                    .on_event
-                    .send(tool_call_to_event(current))
-                    .map_err(sacp::util::internal_error)?;
-            }
-        }
-        SessionUpdate::ToolCallUpdate(update) => {
-            let id = update.tool_call_id.0.to_string();
-            let tool_call = prompt
-                .tool_calls
-                .entry(id.clone())
-                .or_insert_with(|| ToolCall::new(update.tool_call_id.clone(), "tool"));
-            tool_call.update(update.fields);
-            prompt.saw_visible_output = true;
-            prompt
-                .on_event
-                .send(tool_call_to_event(tool_call))
-                .map_err(sacp::util::internal_error)?;
-        }
-        SessionUpdate::Plan(plan) => {
-            let entries = plan
-                .entries
-                .into_iter()
-                .map(|entry| PlanEntryInfo {
-                    content: entry.content,
-                    status: plan_entry_status_to_string(entry.status),
-                })
-                .collect();
-            prompt.saw_visible_output = true;
-            prompt
-                .on_event
-                .send(AgentEvent::PlanUpdate { entries })
-                .map_err(sacp::util::internal_error)?;
-        }
-        SessionUpdate::CurrentModeUpdate(CurrentModeUpdate {
-            current_mode_id, ..
-        }) => {
-            prompt
-                .on_event
-                .send(AgentEvent::ModeUpdate {
-                    current_mode_id: current_mode_id.0.to_string(),
-                })
-                .map_err(sacp::util::internal_error)?;
-        }
-        SessionUpdate::AvailableCommandsUpdate(update) => {
-            let commands = update
-                .available_commands
-                .into_iter()
-                .map(|command| SlashCommandInfo {
-                    name: command.name,
-                    description: command.description,
-                    input_hint: command.input.and_then(|input| match input {
-                        AvailableCommandInput::Unstructured(spec) => Some(spec.hint),
-                        _ => None,
-                    }),
-                })
-                .collect();
-            prompt
-                .on_event
-                .send(AgentEvent::CommandsUpdate { commands })
-                .map_err(sacp::util::internal_error)?;
-        }
-        SessionUpdate::ConfigOptionUpdate(update) => {
-            log::info!(
-                "[acp][{}][session:{}] received config option update count={}",
-                prompt.agent_id,
-                prompt.session_id,
-                update.config_options.len()
-            );
-        }
-        _ => {
-            log::info!(
-                "[acp][{}][session:{}] unhandled session update variant: {}",
-                prompt.agent_id,
-                prompt.session_id,
-                update_summary
-            );
-        }
-    }
-
-    Ok(())
 }
 
 fn describe_session_update(update: &SessionUpdate) -> String {
@@ -1833,27 +1743,53 @@ async fn resolve_permission_selection(
     request_id: String,
     selection: Option<String>,
 ) -> Result<(), String> {
-    let decision_tx = {
+    let pending = {
         let mut runtime = shared.lock().await;
         runtime.pending_permissions.remove(&request_id)
     };
 
-    let Some(decision_tx) = decision_tx else {
+    let Some(pending) = pending else {
         return Err(format!("permission request '{request_id}' not found"));
     };
 
-    decision_tx
+    pending
+        .decision_tx
         .send(selection)
         .map_err(|_| format!("permission request '{request_id}' is no longer waiting"))
 }
 
-async fn cancel_pending_permissions(shared: &Arc<tokio::sync::Mutex<RuntimeShared>>) {
+async fn cancel_pending_permissions_for_session(
+    shared: &Arc<tokio::sync::Mutex<RuntimeShared>>,
+    session_id: &str,
+) {
+    let to_cancel = {
+        let mut runtime = shared.lock().await;
+        let ids: Vec<String> = runtime
+            .pending_permissions
+            .iter()
+            .filter(|(_, p)| p.session_id == session_id)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let mut senders = Vec::new();
+        for id in ids {
+            if let Some(p) = runtime.pending_permissions.remove(&id) {
+                senders.push(p.decision_tx);
+            }
+        }
+        senders
+    };
+    for sender in to_cancel {
+        let _ = sender.send(None);
+    }
+}
+
+async fn cancel_all_pending_permissions(shared: &Arc<tokio::sync::Mutex<RuntimeShared>>) {
     let pending = {
         let mut runtime = shared.lock().await;
         runtime
             .pending_permissions
             .drain()
-            .map(|(_, sender)| sender)
+            .map(|(_, p)| p.decision_tx)
             .collect::<Vec<_>>()
     };
     for sender in pending {
@@ -1861,14 +1797,27 @@ async fn cancel_pending_permissions(shared: &Arc<tokio::sync::Mutex<RuntimeShare
     }
 }
 
-async fn set_active_stream(shared: &Arc<tokio::sync::Mutex<RuntimeShared>>, active: ActiveStream) {
+async fn set_active_stream_for_session(
+    shared: &Arc<tokio::sync::Mutex<RuntimeShared>>,
+    session_id: String,
+    channel: Channel<AgentEvent>,
+) {
     let mut runtime = shared.lock().await;
-    runtime.active_stream = Some(active);
+    runtime.active_streams.insert(
+        session_id.clone(),
+        ActiveStream {
+            session_id,
+            channel,
+        },
+    );
 }
 
-async fn clear_active_stream(shared: &Arc<tokio::sync::Mutex<RuntimeShared>>) {
+async fn clear_active_stream_for_session(
+    shared: &Arc<tokio::sync::Mutex<RuntimeShared>>,
+    session_id: &str,
+) {
     let mut runtime = shared.lock().await;
-    runtime.active_stream = None;
+    runtime.active_streams.remove(session_id);
 }
 
 async fn remove_agent_handle_from_app_state(app_handle: &AppHandle, agent_id: &str) {

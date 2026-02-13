@@ -1,5 +1,6 @@
-import { Markdown } from "@/components/ui/markdown";
 import type { ChatMessage as ChatMessageType } from "@/store/agent-store";
+
+import { ChatMarkdown } from "./chat-markdown";
 
 import { PlanBlock } from "./plan-block";
 import { ThinkingBar } from "./thinking-bar";
@@ -14,7 +15,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   if (isUser) {
     return (
-      <div className="w-full rounded-lg border border-border/70 bg-muted/35 px-2.5 py-2 text-sm text-foreground whitespace-pre-wrap wrap-break-word">
+      <div className="w-full rounded-lg border border-border bg-muted/35 px-2.5 py-2 text-sm text-foreground whitespace-pre-wrap wrap-break-word shadow-lg leading-relaxed">
         {message.content}
       </div>
     );
@@ -23,7 +24,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
   const hasSegments = message.segments.length > 0;
 
   return (
-    <div className="space-y-2">
+    <div className="space-y-2 py-3">
       <ThinkingBar
         thinking={message.thinking}
         isStreaming={message.isStreaming}
@@ -43,7 +44,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
                 key={`text-${index}`}
                 className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5"
               >
-                <Markdown>{segment.content}</Markdown>
+                <ChatMarkdown>{segment.content}</ChatMarkdown>
               </div>
             );
           })
@@ -53,7 +54,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
       {!hasSegments && (message.content || message.isStreaming) && (
         <div className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5">
           {message.content ? (
-            <Markdown>{message.content}</Markdown>
+            <ChatMarkdown>{message.content}</ChatMarkdown>
           ) : (
             message.isStreaming && (
               <span className="bg-[linear-gradient(to_right,var(--muted-foreground)_40%,var(--foreground)_60%,var(--muted-foreground)_80%)] bg-size-[200%_auto] bg-clip-text font-medium text-transparent animate-[shimmer_4s_infinite_linear] text-sm">
