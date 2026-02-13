@@ -1,4 +1,4 @@
-import { Check, Circle, Dot } from "lucide-react";
+import { Check, Circle, CircleDot } from "lucide-react";
 
 import type { PlanEntry } from "@/store/agent-store";
 
@@ -11,7 +11,7 @@ const statusIcon = (status: PlanEntry["status"]) => {
     case "completed":
       return <Check className="h-3.5 w-3.5 text-emerald-500" />;
     case "in_progress":
-      return <Dot className="h-4 w-4 text-blue-500" />;
+      return <CircleDot className="h-3.5 w-3.5 text-blue-500" />;
     default:
       return <Circle className="h-3 w-3 text-muted-foreground" />;
   }

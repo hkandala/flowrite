@@ -23,7 +23,7 @@ function ChatContainerRoot({
 }: ChatContainerRootProps) {
   return (
     <StickToBottom
-      className={cn("flex overflow-y-auto scrollbar-gutter-stable", className)}
+      className={cn("flex", className)}
       resize="smooth"
       initial="instant"
       role="log"
@@ -41,6 +41,7 @@ function ChatContainerContent({
 }: ChatContainerContentProps) {
   return (
     <StickToBottom.Content
+      scrollClassName="chat-scroll-container"
       className={cn("flex w-full flex-col", className)}
       {...props}
     >

@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
-import { MarkdownPlugin } from "@platejs/markdown";
-import { createSlateEditor } from "platejs";
+import { MarkdownPlugin, remarkMdx } from "@platejs/markdown";
+import { KEYS, createSlateEditor } from "platejs";
+import remarkGfm from "remark-gfm";
 
 import { BaseBasicBlocksKit } from "@/components/editor/plugins/basic-blocks-base-kit";
 import { BaseBasicMarksKit } from "@/components/editor/plugins/basic-marks-base-kit";
@@ -9,8 +10,16 @@ import { BaseCodeBlockKit } from "@/components/editor/plugins/code-block-base-ki
 import { BaseLinkKit } from "@/components/editor/plugins/link-base-kit";
 import { BaseListKit } from "@/components/editor/plugins/list-base-kit";
 import { BaseTableKit } from "@/components/editor/plugins/table-base-kit";
-import { MarkdownKit } from "@/components/editor/plugins/markdown-kit";
 import { EditorStatic } from "@/components/ui/editor-static";
+
+const ChatMarkdownKit = [
+  MarkdownPlugin.configure({
+    options: {
+      disallowedNodes: [KEYS.suggestion],
+      remarkPlugins: [remarkGfm, remarkMdx],
+    },
+  }),
+];
 
 const chatPlugins = [
   ...BaseBasicBlocksKit,
@@ -19,7 +28,7 @@ const chatPlugins = [
   ...BaseLinkKit,
   ...BaseListKit,
   ...BaseTableKit,
-  ...MarkdownKit,
+  ...ChatMarkdownKit,
 ];
 
 const THROTTLE_MS = 150;
@@ -79,5 +88,12 @@ export function ChatMarkdown({ children }: ChatMarkdownProps) {
     return () => clearTimeout(id);
   }, [children, editor]);
 
-  return <EditorStatic editor={editor} value={value} variant="ai" />;
+  return (
+    <EditorStatic
+      editor={editor}
+      value={value}
+      variant="none"
+      className="space-y-2 [&_li]:my-0.5"
+    />
+  );
 }

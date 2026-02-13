@@ -1,26 +1,45 @@
 import { Button } from "@/components/ui/button";
-import type { PermissionRequest } from "@/store/agent-store";
+import { deriveLabel } from "@/lib/tool-call-label";
+import type { PermissionRequest, ToolCall } from "@/store/agent-store";
 
 interface PermissionDialogProps {
   permission: PermissionRequest;
+  matchedToolCall?: ToolCall;
   isResponding: boolean;
   onRespond: (requestId: string, optionId: string) => void;
 }
 
-/** Strip wrapping literal quotes: `"foo"` -> `foo` */
-const cleanTitle = (raw: string): string =>
-  raw.replace(/^"(.*)"$/, "$1").trim();
-
 export function PermissionDialog({
   permission,
+  matchedToolCall,
   isResponding,
   onRespond,
 }: PermissionDialogProps) {
-  const description = permission.title ? cleanTitle(permission.title) : null;
+  const isSwitchMode = matchedToolCall?.kind === "switch_mode";
 
-  // Sort options: reject first, then allow_always, then allow
+  const description = matchedToolCall
+    ? (() => {
+        if (isSwitchMode) return null;
+        const { verb, subject } = deriveLabel(matchedToolCall, "infinitive");
+        return subject ? `${verb} ${subject}` : verb;
+      })()
+    : null;
+
+  const title = isSwitchMode
+    ? (matchedToolCall?.title?.replace(/^"(.*)"$/, "$1").toLowerCase() ??
+      "ready to code?")
+    : "agent needs permission to continue";
+
+  // Sort options: for switch_mode reverse (allow first, reject last),
+  // otherwise reject first, then allow_always, then allow
   const sortedOptions = [...permission.options].sort((a, b) => {
     const order = (kind: string) => {
+      if (isSwitchMode) {
+        if (kind.startsWith("allow") && kind !== "allow_always") return 0;
+        if (kind === "allow_always") return 1;
+        if (kind.startsWith("reject")) return 2;
+        return 3;
+      }
       if (kind.startsWith("reject")) return 0;
       if (kind === "allow_always") return 1;
       if (kind.startsWith("allow")) return 2;
@@ -29,50 +48,73 @@ export function PermissionDialog({
     return order(a.kind) - order(b.kind);
   });
 
-  const getButtonProps = (kind: string) => {
-    if (kind.startsWith("reject")) {
-      return {
-        variant: "ghost" as const,
-        className: "text-destructive",
-        label: "Block",
-      };
-    }
-    if (kind === "allow_always") {
-      return {
-        variant: "ghost" as const,
-        className: "",
-        label: "Always Allow",
-      };
-    }
-    if (kind.startsWith("allow")) {
+  const getButtonProps = (option: { kind: string; name: string }) => {
+    // For switch_mode (plan approval), use the agent's own labels
+    if (isSwitchMode) {
+      if (option.kind.startsWith("reject")) {
+        return {
+          variant: "ghost" as const,
+          className: "text-destructive",
+          label: option.name.toLowerCase(),
+        };
+      }
       return {
         variant: "outline" as const,
         className: "",
-        label: "Allow",
+        label: option.name.toLowerCase(),
+      };
+    }
+
+    if (option.kind.startsWith("reject")) {
+      return {
+        variant: "ghost" as const,
+        className: "text-destructive",
+        label: "block",
+      };
+    }
+    if (option.kind === "allow_always") {
+      return {
+        variant: "ghost" as const,
+        className: "",
+        label: "always allow",
+      };
+    }
+    if (option.kind.startsWith("allow")) {
+      return {
+        variant: "outline" as const,
+        className: "",
+        label: "allow",
       };
     }
     return {
       variant: "outline" as const,
       className: "",
-      label: null, // use option.name as fallback
+      label: option.name,
     };
   };
 
   return (
-    <div className="glass-surface glass-border-subtle rounded-lg p-3 space-y-3">
-      <div className="space-y-1">
-        <p className="text-sm text-foreground">
-          Agent needs permission to continue
-        </p>
+    <div className="rounded-lg border border-border bg-muted/20 p-3 space-y-3">
+      <div className="space-y-1.5">
+        <p className="text-sm text-foreground">{title}</p>
         {description && (
-          <p className="text-xs text-muted-foreground truncate">
+          <p
+            className="text-xs text-muted-foreground truncate"
+            title={description}
+          >
             {description}
           </p>
         )}
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div
+        className={
+          isSwitchMode
+            ? "flex flex-col items-start gap-2"
+            : "flex flex-wrap gap-2"
+        }
+      >
         {sortedOptions.map((option) => {
-          const props = getButtonProps(option.kind);
+          const props = getButtonProps(option);
           return (
             <Button
               key={option.optionId}
@@ -83,7 +125,7 @@ export function PermissionDialog({
               disabled={!isResponding}
               onClick={() => onRespond(permission.requestId, option.optionId)}
             >
-              {props.label ?? option.name}
+              {props.label}
             </Button>
           );
         })}

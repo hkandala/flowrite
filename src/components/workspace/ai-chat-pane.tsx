@@ -244,19 +244,29 @@ export function AiChatPane() {
         </div>
       </ChatContainerRoot>
 
-      {pendingPermissions.map((permission) => (
-        <div key={permission.requestId} className="px-3 pb-2">
-          <PermissionDialog
-            permission={permission}
-            isResponding={isResponding}
-            onRespond={(requestId, optionId) => {
-              if (session) {
-                void respondPermission(session.sessionId, requestId, optionId);
-              }
-            }}
-          />
-        </div>
-      ))}
+      {pendingPermissions.map((permission) => {
+        const matchedToolCall = messages
+          .flatMap((m) => m.toolCalls)
+          .find((tc) => tc.id === permission.toolCallId);
+        return (
+          <div key={permission.requestId} className="pr-3.5 pb-2">
+            <PermissionDialog
+              permission={permission}
+              matchedToolCall={matchedToolCall}
+              isResponding={isResponding}
+              onRespond={(requestId, optionId) => {
+                if (session) {
+                  void respondPermission(
+                    session.sessionId,
+                    requestId,
+                    optionId,
+                  );
+                }
+              }}
+            />
+          </div>
+        );
+      })}
 
       <ChatInput />
     </div>

@@ -63,7 +63,6 @@ export interface SlashCommand {
 export interface PermissionRequest {
   requestId: string;
   toolCallId: string;
-  title?: string;
   options: {
     optionId: string;
     name: string;
@@ -233,7 +232,6 @@ type AgentEvent =
       data: {
         requestId: string;
         toolCallId: string;
-        title?: string;
         options: { optionId: string; name: string; kind: string }[];
       };
     }
@@ -1042,7 +1040,6 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               {
                 requestId: event.data.requestId,
                 toolCallId: event.data.toolCallId,
-                title: event.data.title,
                 options: event.data.options.map((option) => ({
                   optionId: option.optionId,
                   name: option.name,

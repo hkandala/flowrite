@@ -43,7 +43,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             return (
               <div
                 key={`text-${index}`}
-                className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5"
+                className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5 py-1"
               >
                 <ChatMarkdown>{segment.content}</ChatMarkdown>
               </div>

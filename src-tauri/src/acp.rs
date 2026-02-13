@@ -201,6 +201,7 @@ pub enum AgentEvent {
         request_id: String,
         tool_call_id: String,
         title: Option<String>,
+        kind: Option<String>,
         options: Vec<PermissionOptionInfo>,
     },
     PlanUpdate {
@@ -783,6 +784,7 @@ async fn run_agent_task(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_agent_command_loop(
     agent_id: String,
     cx: sacp::JrConnectionCx<sacp::link::ClientToAgent>,
@@ -983,6 +985,7 @@ async fn run_agent_command_loop(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prompt_reader_task(
     agent_id: String,
     session_id: String,
@@ -1231,6 +1234,7 @@ async fn handle_permission_request(
                 request_id: request_id.clone(),
                 tool_call_id: request.tool_call.tool_call_id.0.to_string(),
                 title: request.tool_call.fields.title.clone(),
+                kind: request.tool_call.fields.kind.map(tool_kind_to_string),
                 options: request
                     .options
                     .iter()
