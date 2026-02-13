@@ -16,9 +16,7 @@ export function PermissionDialog({
   isResponding,
   onRespond,
 }: PermissionDialogProps) {
-  const description = permission.title
-    ? cleanTitle(permission.title)
-    : null;
+  const description = permission.title ? cleanTitle(permission.title) : null;
 
   // Sort options: reject first, then allow_always, then allow
   const sortedOptions = [...permission.options].sort((a, b) => {

@@ -31,6 +31,7 @@ import { BasicMarksKit } from "@/components/editor/plugins/basic-marks-kit";
 import {
   type TDiscussion,
   discussionPlugin,
+  generateDiscussionId,
 } from "@/components/editor/plugins/discussion-kit";
 import { Editor, EditorContainer } from "./editor";
 
@@ -417,7 +418,7 @@ export function CommentCreateForm({
       .map(([node]) => node.text)
       .join("");
 
-    const _discussionId = nanoid();
+    const _discussionId = generateDiscussionId();
     const newDiscussion: TDiscussion = {
       id: _discussionId,
       comments: [

@@ -35,7 +35,9 @@ export function ChatMarkdown({ children }: ChatMarkdownProps) {
   const editor = useMemo(() => createSlateEditor({ plugins: chatPlugins }), []);
 
   const [value, setValue] = useState(() =>
-    editor.getApi(MarkdownPlugin).markdown.deserialize(normalizeMarkdown(children)),
+    editor
+      .getApi(MarkdownPlugin)
+      .markdown.deserialize(normalizeMarkdown(children)),
   );
 
   const lastUpdateRef = useRef(Date.now());
@@ -54,7 +56,11 @@ export function ChatMarkdown({ children }: ChatMarkdownProps) {
     if (elapsed >= THROTTLE_MS) {
       lastUpdateRef.current = now;
       lastDeserializedRef.current = children;
-      setValue(editor.getApi(MarkdownPlugin).markdown.deserialize(normalizeMarkdown(children)));
+      setValue(
+        editor
+          .getApi(MarkdownPlugin)
+          .markdown.deserialize(normalizeMarkdown(children)),
+      );
       return;
     }
 
@@ -63,7 +69,11 @@ export function ChatMarkdown({ children }: ChatMarkdownProps) {
       const content = lastContentRef.current;
       lastUpdateRef.current = Date.now();
       lastDeserializedRef.current = content;
-      setValue(editor.getApi(MarkdownPlugin).markdown.deserialize(normalizeMarkdown(content)));
+      setValue(
+        editor
+          .getApi(MarkdownPlugin)
+          .markdown.deserialize(normalizeMarkdown(content)),
+      );
     }, THROTTLE_MS - elapsed);
 
     return () => clearTimeout(id);

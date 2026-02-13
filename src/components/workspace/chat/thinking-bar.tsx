@@ -28,12 +28,11 @@ export function ThinkingBar({
 
   if (!thinking.trim()) return null;
 
-  const label =
-    isStreaming
-      ? "thinking..."
-      : thinkingStartedAt
-        ? formatDuration(thinkingStartedAt)
-        : "thought";
+  const label = isStreaming
+    ? "thinking..."
+    : thinkingStartedAt
+      ? formatDuration(thinkingStartedAt)
+      : "thought";
 
   return (
     <div className="px-1.5">

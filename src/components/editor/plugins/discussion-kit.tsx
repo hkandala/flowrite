@@ -1,6 +1,12 @@
 import type { TComment } from "@/components/ui/comment";
 
+import { nanoid } from "platejs";
 import { createPlatePlugin } from "platejs/react";
+
+/** Generate a short stable ID for persisting discussions across sessions. */
+export function generateDiscussionId(): string {
+  return nanoid(5);
+}
 
 export type TDiscussion = {
   id: string;

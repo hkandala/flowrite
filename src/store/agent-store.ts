@@ -978,8 +978,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
               (message) => ({
                 ...message,
                 thinking: `${message.thinking}${event.data.text}`,
-                thinkingStartedAt:
-                  message.thinkingStartedAt ?? Date.now(),
+                thinkingStartedAt: message.thinkingStartedAt ?? Date.now(),
               }),
             );
             break;

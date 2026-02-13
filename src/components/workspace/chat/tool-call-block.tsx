@@ -41,10 +41,7 @@ const VERB_FORMS: Record<string, [string, string, string]> = {
   move: ["moving", "moved", "move"],
 };
 
-const getVerb = (
-  kind: string,
-  status: string,
-): string => {
+const getVerb = (kind: string, status: string): string => {
   const forms = VERB_FORMS[kind];
   if (!forms) {
     if (status === "completed") return "ran";
@@ -88,7 +85,9 @@ const deriveLabel = (
 
   const rawTitle = toolCall.title?.toLowerCase() || "";
   const title = stripQuotes(rawTitle);
-  const isGeneric = GENERIC_TITLES.some((g) => title === g || title.startsWith(`${g} `)) || title === "";
+  const isGeneric =
+    GENERIC_TITLES.some((g) => title === g || title.startsWith(`${g} `)) ||
+    title === "";
   const verb = getVerb(toolCall.kind, toolCall.status);
 
   switch (toolCall.kind) {
@@ -215,7 +214,8 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
                 className="underline decoration-muted-foreground/40 hover:decoration-foreground cursor-pointer"
                 onClick={handleFileClick}
                 onKeyDown={(e) => {
-                  if (e.key === "Enter") handleFileClick(e as unknown as React.MouseEvent);
+                  if (e.key === "Enter")
+                    handleFileClick(e as unknown as React.MouseEvent);
                 }}
               >
                 {subject}

@@ -67,12 +67,9 @@ interface SerializedComment {
 }
 
 interface SerializedDiscussion {
+  id: string;
   documentContent: string;
   createdAt: string;
-  startBlock?: number;
-  startOffset?: number;
-  endBlock?: number;
-  endOffset?: number;
   comments: SerializedComment[];
 }
 
@@ -82,17 +79,19 @@ function richTextToPlain(value: unknown[]): string {
 }
 
 /**
- * Serialize discussions from the editor's in-memory state to the flat
- * frontmatter format. Walks the Slate tree to find comment mark positions.
+ * Serialize discussions using inline HTML comment markers.
+ * Returns YAML-ready data AND a cloned Slate tree with markers injected.
  */
-function serializeDiscussions(
+function serializeDiscussionsWithMarkers(
   editor: ReturnType<typeof createPlateEditor>,
   discussions: TDiscussion[],
-): SerializedDiscussion[] {
+): { serialized: SerializedDiscussion[]; markedValue: any[] } {
   const activeDiscussions = discussions.filter((d) => !d.isResolved);
-  if (activeDiscussions.length === 0) return [];
+  if (activeDiscussions.length === 0) {
+    return { serialized: [], markedValue: structuredClone(editor.children) };
+  }
 
-  // Build a map of discussionId → { startBlock, startOffset, endBlock, endOffset }
+  // Build posMap: discussionId → position range + document content
   const posMap = new Map<
     string,
     {
@@ -109,20 +108,17 @@ function serializeDiscussions(
 
   for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
     const block = blocks[blockIdx];
-    // Flatten all text nodes in this block
     const textNodes = Array.from(NodeApi.texts(block as any));
     let charOffset = 0;
 
     for (const [textNode] of textNodes) {
       const text = (textNode as any).text as string;
-      // Check for comment keys on this text node
       const keys = Object.keys(textNode).filter(
         (k) => k.startsWith("comment_") && k !== "comment_draft",
       );
 
       for (const key of keys) {
         const discussionId = key.replace("comment_", "");
-
         const existing = posMap.get(discussionId);
         if (!existing) {
           posMap.set(discussionId, {
@@ -134,7 +130,6 @@ function serializeDiscussions(
             lastSeenBlock: blockIdx,
           });
         } else {
-          // Extend the range
           existing.endBlock = blockIdx;
           existing.endOffset = charOffset + text.length;
           if (existing.lastSeenBlock === blockIdx) {
@@ -150,62 +145,195 @@ function serializeDiscussions(
     }
   }
 
-  const result: SerializedDiscussion[] = [];
+  // Clone the Slate tree for marker injection
+  const markedValue = structuredClone(editor.children) as any[];
+
+  // Collect injection points
+  const injections: {
+    blockIdx: number;
+    charOffset: number;
+    type: "open" | "close";
+    id: string;
+  }[] = [];
+
+  for (const [id, pos] of posMap) {
+    injections.push({
+      blockIdx: pos.startBlock,
+      charOffset: pos.startOffset,
+      type: "open",
+      id,
+    });
+    injections.push({
+      blockIdx: pos.endBlock,
+      charOffset: pos.endOffset,
+      type: "close",
+      id,
+    });
+  }
+
+  // Sort descending so we inject from end to start (preserves earlier offsets)
+  injections.sort((a, b) => {
+    if (a.blockIdx !== b.blockIdx) return b.blockIdx - a.blockIdx;
+    if (a.charOffset !== b.charOffset) return b.charOffset - a.charOffset;
+    // Close markers before open markers at same position (for interleaving)
+    return a.type === "close" ? -1 : 1;
+  });
+
+  // Inject markers into cloned tree
+  for (const inj of injections) {
+    const marker =
+      inj.type === "open" ? `<!--${inj.id}-->` : `<!--/${inj.id}-->`;
+    const block = markedValue[inj.blockIdx];
+    if (!block?.children) continue;
+
+    // Find the text node at the target offset and split it
+    let pos = 0;
+    const newChildren: any[] = [];
+    let injected = false;
+
+    for (const child of block.children) {
+      if (child.text === undefined || injected) {
+        newChildren.push(child);
+        continue;
+      }
+
+      const text: string = child.text;
+      const nodeStart = pos;
+      const nodeEnd = pos + text.length;
+
+      if (inj.charOffset >= nodeStart && inj.charOffset <= nodeEnd) {
+        const splitAt = inj.charOffset - nodeStart;
+        // Strip comment marks from the parts
+        const cleanProps = { ...child };
+        for (const k of Object.keys(cleanProps)) {
+          if (k.startsWith("comment_") || k === "comment") {
+            delete cleanProps[k];
+          }
+        }
+
+        if (splitAt > 0) {
+          newChildren.push({ ...cleanProps, text: text.slice(0, splitAt) });
+        }
+        newChildren.push({ text: marker });
+        if (splitAt < text.length) {
+          newChildren.push({ ...cleanProps, text: text.slice(splitAt) });
+        }
+        injected = true;
+      } else {
+        // Strip comment marks from non-injection nodes too
+        const cleanProps = { ...child };
+        for (const k of Object.keys(cleanProps)) {
+          if (k.startsWith("comment_") || k === "comment") {
+            delete cleanProps[k];
+          }
+        }
+        newChildren.push(cleanProps);
+      }
+
+      pos = nodeEnd;
+    }
+
+    // If offset is past all text nodes (e.g. end of block), append marker
+    if (!injected) {
+      newChildren.push({ text: marker });
+    }
+
+    block.children = newChildren;
+  }
+
+  // Build serialized discussions
+  const serialized: SerializedDiscussion[] = [];
 
   for (const discussion of activeDiscussions) {
     const pos = posMap.get(discussion.id);
+    serialized.push({
+      id: discussion.id,
+      documentContent: pos?.docContent ?? discussion.documentContent ?? "",
+      createdAt: new Date(discussion.createdAt).toISOString(),
+      comments: discussion.comments.map((c) => ({
+        user: c.userId,
+        content: richTextToPlain(c.contentRich),
+        createdAt: new Date(c.createdAt).toISOString(),
+      })),
+    });
+  }
 
-    if (pos) {
-      // Text-anchored discussion
-      result.push({
-        documentContent: pos.docContent,
-        createdAt: new Date(discussion.createdAt).toISOString(),
-        startBlock: pos.startBlock,
-        startOffset: pos.startOffset,
-        endBlock: pos.endBlock,
-        endOffset: pos.endOffset,
-        comments: discussion.comments.map((c) => ({
-          user: c.userId,
-          content: richTextToPlain(c.contentRich),
-          createdAt: new Date(c.createdAt).toISOString(),
-        })),
+  return { serialized, markedValue };
+}
+
+/**
+ * Extract inline HTML comment markers from markdown and return clean markdown.
+ */
+function extractAndStripMarkers(markdown: string): {
+  cleanMarkdown: string;
+  markers: Array<{ id: string; textContent: string }>;
+} {
+  const markerPattern = /<!--(\w+)-->/g;
+  const openPositions = new Map<string, number>();
+  const markers: Array<{ id: string; textContent: string }> = [];
+
+  // First pass: find all open/close marker positions in original text
+  const allMarkers: Array<{
+    start: number;
+    end: number;
+    id: string;
+    type: "open" | "close";
+  }> = [];
+
+  let match;
+  while ((match = markerPattern.exec(markdown)) !== null) {
+    const raw = match[1];
+    if (raw.startsWith("/")) {
+      allMarkers.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        id: raw.slice(1),
+        type: "close",
       });
     } else {
-      // Doc-level discussion (no text anchor)
-      result.push({
-        documentContent: discussion.documentContent ?? "",
-        createdAt: new Date(discussion.createdAt).toISOString(),
-        comments: discussion.comments.map((c) => ({
-          user: c.userId,
-          content: richTextToPlain(c.contentRich),
-          createdAt: new Date(c.createdAt).toISOString(),
-        })),
+      allMarkers.push({
+        start: match.index,
+        end: match.index + match[0].length,
+        id: raw,
+        type: "open",
       });
     }
   }
 
-  return result;
+  // Pair open/close markers and extract text between them
+  for (const m of allMarkers) {
+    if (m.type === "open") {
+      openPositions.set(m.id, m.end);
+    } else if (m.type === "close" && openPositions.has(m.id)) {
+      const textStart = openPositions.get(m.id)!;
+      let textContent = markdown.slice(textStart, m.start);
+      // Strip any nested markers from the extracted text
+      textContent = textContent.replace(/<!--\/?\w+-->/g, "");
+      markers.push({ id: m.id, textContent });
+      openPositions.delete(m.id);
+    }
+  }
+
+  // Remove all markers from markdown
+  const cleanMarkdown = markdown.replace(/<!--\/?\w+-->/g, "");
+
+  return { cleanMarkdown, markers };
 }
 
 /**
- * Deserialize frontmatter discussions into internal TDiscussion[] and users map.
- * Generates new IDs for each discussion and comment.
+ * Deserialize frontmatter discussions using stable IDs (new marker format).
  */
 function deserializeDiscussions(serialized: SerializedDiscussion[]): {
   discussions: TDiscussion[];
   users: Record<string, { id: string; name: string }>;
-  idMap: Map<string, SerializedDiscussion>;
 } {
   const users: Record<string, { id: string; name: string }> = {};
   const discussions: TDiscussion[] = [];
-  const idMap = new Map<string, SerializedDiscussion>();
 
   for (const sd of serialized) {
-    const discussionId = nanoid();
-    idMap.set(discussionId, sd);
+    const discussionId = sd.id;
 
     const comments: TComment[] = sd.comments.map((sc) => {
-      // Build user entry
       if (!users[sc.user]) {
         users[sc.user] = {
           id: sc.user,
@@ -238,52 +366,145 @@ function deserializeDiscussions(serialized: SerializedDiscussion[]): {
     });
   }
 
-  return { discussions, users, idMap };
+  return { discussions, users };
 }
 
 /**
- * Apply comment marks by directly mutating the Slate value array.
- * This runs before the editor is mounted in React, so we can't use
- * editor transforms — we must mutate the node tree directly.
+ * Find a text string within the Slate value, returning block/offset positions.
+ * Handles both single-block and multi-block text spans.
+ * usedRanges prevents the same range from being matched twice.
  */
-function applyCommentMarks(
+function findTextInSlateValue(
+  value: any[],
+  searchText: string,
+  usedRanges: Set<string>,
+): {
+  startBlock: number;
+  startOffset: number;
+  endBlock: number;
+  endOffset: number;
+} | null {
+  // Extract plain text per block
+  const blockTexts: string[] = value.map((block) =>
+    block.children
+      ? block.children
+          .filter((c: any) => c.text !== undefined)
+          .map((c: any) => c.text)
+          .join("")
+      : "",
+  );
+
+  // Check if searchText contains newlines (multi-block)
+  const searchLines = searchText.split("\n");
+
+  if (searchLines.length === 1) {
+    // Single-block search
+    for (let b = 0; b < blockTexts.length; b++) {
+      let startFrom = 0;
+      while (true) {
+        const idx = blockTexts[b].indexOf(searchText, startFrom);
+        if (idx === -1) break;
+        const rangeKey = `${b}:${idx}:${b}:${idx + searchText.length}`;
+        if (!usedRanges.has(rangeKey)) {
+          usedRanges.add(rangeKey);
+          return {
+            startBlock: b,
+            startOffset: idx,
+            endBlock: b,
+            endOffset: idx + searchText.length,
+          };
+        }
+        startFrom = idx + 1;
+      }
+    }
+  } else {
+    // Multi-block search: first line must match suffix of a block,
+    // last line must match prefix of a block, middle lines match exactly
+    for (let b = 0; b <= blockTexts.length - searchLines.length; b++) {
+      const firstLine = searchLines[0];
+      const lastLine = searchLines[searchLines.length - 1];
+
+      // Check if first line matches at end of block b
+      if (!blockTexts[b].endsWith(firstLine)) continue;
+
+      // Check middle lines match exactly
+      let middleMatch = true;
+      for (let m = 1; m < searchLines.length - 1; m++) {
+        if (blockTexts[b + m] !== searchLines[m]) {
+          middleMatch = false;
+          break;
+        }
+      }
+      if (!middleMatch) continue;
+
+      // Check if last line matches at start of the last block
+      const lastBlockIdx = b + searchLines.length - 1;
+      if (!blockTexts[lastBlockIdx].startsWith(lastLine)) continue;
+
+      const startOffset = blockTexts[b].length - firstLine.length;
+      const endOffset = lastLine.length;
+      const rangeKey = `${b}:${startOffset}:${lastBlockIdx}:${endOffset}`;
+
+      if (!usedRanges.has(rangeKey)) {
+        usedRanges.add(rangeKey);
+        return {
+          startBlock: b,
+          startOffset,
+          endBlock: lastBlockIdx,
+          endOffset,
+        };
+      }
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Apply comment marks by text-matching marker content against the Slate tree.
+ */
+function applyCommentMarksByTextMatch(
   value: any[],
   discussions: TDiscussion[],
-  idMap: Map<string, SerializedDiscussion>,
+  markers: Array<{ id: string; textContent: string }>,
 ) {
-  for (const discussion of discussions) {
-    const sd = idMap.get(discussion.id);
-    if (!sd) continue;
+  const markerMap = new Map<string, string>();
+  for (const m of markers) {
+    markerMap.set(m.id, m.textContent);
+  }
 
-    // Skip doc-level discussions (no position data)
-    if (
-      sd.startBlock === undefined ||
-      sd.startOffset === undefined ||
-      sd.endBlock === undefined ||
-      sd.endOffset === undefined
-    ) {
-      continue;
-    }
+  const usedRanges = new Set<string>();
+
+  for (const discussion of discussions) {
+    const textContent =
+      markerMap.get(discussion.id) ?? discussion.documentContent;
+    if (!textContent) continue;
+
+    const range = findTextInSlateValue(value, textContent, usedRanges);
+    if (!range) continue;
 
     const commentKey = getCommentKey(discussion.id);
 
-    if (sd.startBlock === sd.endBlock) {
+    if (range.startBlock === range.endBlock) {
       applyMarkToBlock(
         value,
-        sd.startBlock,
-        sd.startOffset,
-        sd.endOffset,
+        range.startBlock,
+        range.startOffset,
+        range.endOffset,
         commentKey,
       );
     } else {
-      // Start block: from startOffset to end
-      applyMarkToBlock(value, sd.startBlock, sd.startOffset, -1, commentKey);
-      // Middle blocks: entire block
-      for (let b = sd.startBlock + 1; b < sd.endBlock; b++) {
+      applyMarkToBlock(
+        value,
+        range.startBlock,
+        range.startOffset,
+        -1,
+        commentKey,
+      );
+      for (let b = range.startBlock + 1; b < range.endBlock; b++) {
         applyMarkToBlock(value, b, 0, -1, commentKey);
       }
-      // End block: from 0 to endOffset
-      applyMarkToBlock(value, sd.endBlock, 0, sd.endOffset, commentKey);
+      applyMarkToBlock(value, range.endBlock, 0, range.endOffset, commentKey);
     }
   }
 }
@@ -427,13 +648,18 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       return;
     }
 
-    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
-
-    // Serialize discussions to frontmatter
+    // Serialize discussions with inline markers
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const serializedDiscussions = serializeDiscussions(editor, discussions);
-    if (serializedDiscussions.length > 0) {
-      metadataRef.current.discussions = serializedDiscussions;
+    const { serialized, markedValue } = serializeDiscussionsWithMarkers(
+      editor,
+      discussions,
+    );
+    const markdown = editor
+      .getApi(MarkdownPlugin)
+      .markdown.serialize({ value: markedValue });
+
+    if (serialized.length > 0) {
+      metadataRef.current.discussions = serialized;
     } else {
       delete metadataRef.current.discussions;
     }
@@ -490,14 +716,19 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     if (!selectedPath) return;
 
-    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+    // Serialize discussions with inline markers
+    const discussions = editor.getOption(discussionPlugin, "discussions");
+    const { serialized, markedValue } = serializeDiscussionsWithMarkers(
+      editor,
+      discussions,
+    );
+    const markdown = editor
+      .getApi(MarkdownPlugin)
+      .markdown.serialize({ value: markedValue });
     const isExtPath = !(await isInternalPath(selectedPath));
 
-    // Serialize discussions to frontmatter
-    const discussions = editor.getOption(discussionPlugin, "discussions");
-    const serializedDiscussions = serializeDiscussions(editor, discussions);
-    if (serializedDiscussions.length > 0) {
-      metadataRef.current.discussions = serializedDiscussions;
+    if (serialized.length > 0) {
+      metadataRef.current.discussions = serialized;
     } else {
       delete metadataRef.current.discussions;
     }
@@ -578,9 +809,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     if (!editor || !filePath || isExternal || !initialLoadCompleteRef.current)
       return;
 
-    // Serialize discussions into metadataRef
+    // Serialize discussions into metadataRef (metadata-only, no body markers)
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const serialized = serializeDiscussions(editor, discussions);
+    const { serialized } = serializeDiscussionsWithMarkers(editor, discussions);
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
     } else {
@@ -685,14 +916,18 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             | {
                 discussions: TDiscussion[];
                 users: Record<string, { id: string; name: string }>;
-                idMap: Map<string, SerializedDiscussion>;
               }
             | undefined;
+          let markers: Array<{ id: string; textContent: string }> | undefined;
+          let contentToDeserialize = parsed.content;
 
           if (
             parsed.data.discussions &&
             Array.isArray(parsed.data.discussions)
           ) {
+            const extracted = extractAndStripMarkers(parsed.content);
+            contentToDeserialize = extracted.cleanMarkdown;
+            markers = extracted.markers;
             discussionState = deserializeDiscussions(parsed.data.discussions);
           }
 
@@ -701,14 +936,14 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             value: (editor) => {
               const nodes = editor
                 .getApi(MarkdownPlugin)
-                .markdown.deserialize(parsed.content);
+                .markdown.deserialize(contentToDeserialize);
 
               // Apply comment marks directly into the value before editor mounts
-              if (discussionState) {
-                applyCommentMarks(
+              if (discussionState && markers) {
+                applyCommentMarksByTextMatch(
                   nodes,
                   discussionState.discussions,
-                  discussionState.idMap,
+                  markers,
                 );
               }
 
