@@ -9,6 +9,7 @@ import { getBaseDir } from "@/lib/utils";
 
 const AGENT_CONFIGS_KEY = "agent-configs";
 const REGISTRY_LOADED_KEY = "registry-loaded";
+const LAST_SELECTED_AGENT_KEY = "last-selected-agent";
 const ACP_REGISTRY_URL =
   "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
@@ -146,10 +147,12 @@ export interface ChatTab {
 interface AgentConfigState {
   agents: AgentConfig[];
   registryLoaded: boolean;
+  lastSelectedAgentId: string | null;
 }
 
 interface AgentConfigActions {
   initAgents: () => Promise<void>;
+  setLastSelectedAgent: (id: string) => Promise<void>;
   updateAgent: (id: string, partial: Partial<AgentConfig>) => Promise<void>;
   addAgent: (config: {
     name: string;
@@ -562,6 +565,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   // ─── Agent Config State ───
   agents: [],
   registryLoaded: false,
+  lastSelectedAgentId: null,
 
   // ─── Chat Session State ───
   sessions: {},
@@ -577,6 +581,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       const store = await getSettingsStore();
       const savedLoaded = await store.get<boolean>(REGISTRY_LOADED_KEY);
       const savedAgents = await store.get<AgentConfig[]>(AGENT_CONFIGS_KEY);
+      const lastAgent = await store.get<string>(LAST_SELECTED_AGENT_KEY);
 
       if (savedLoaded && Array.isArray(savedAgents)) {
         const shouldBackfillRegistryMetadata = savedAgents.some(
@@ -601,6 +606,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         set({
           agents: nextAgents,
           registryLoaded: true,
+          lastSelectedAgentId: lastAgent ?? null,
         });
         return;
       }
@@ -613,6 +619,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       set({
         agents: registryAgents,
         registryLoaded: true,
+        lastSelectedAgentId: lastAgent ?? null,
       });
 
       await persistAgentSettings(registryAgents, true);
@@ -621,6 +628,13 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         error instanceof Error ? error.message : "failed to initialize agents";
       toast.error("agent setup failed", { description: message });
     }
+  },
+
+  setLastSelectedAgent: async (id) => {
+    set({ lastSelectedAgentId: id });
+    const store = await getSettingsStore();
+    await store.set(LAST_SELECTED_AGENT_KEY, id);
+    await store.save();
   },
 
   updateAgent: async (id, partial) => {

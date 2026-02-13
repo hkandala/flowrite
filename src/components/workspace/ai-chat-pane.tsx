@@ -87,11 +87,12 @@ function ConnectionErrorDisplay({ error }: { error: ConnectionError }) {
 }
 
 function AgentSelectionView() {
-  const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
 
   const agents = useAgentStore((s) => s.agents);
   const connect = useAgentStore((s) => s.connect);
+  const lastSelectedAgentId = useAgentStore((s) => s.lastSelectedAgentId);
+  const setLastSelectedAgent = useAgentStore((s) => s.setLastSelectedAgent);
 
   const configuredAgents = useMemo(
     () => agents.filter((agent) => agent.commandConfigured),
@@ -99,14 +100,14 @@ function AgentSelectionView() {
   );
   const selectedAgent = useMemo(
     () =>
-      configuredAgents.find((agent) => agent.id === selectedAgentId) ?? null,
-    [configuredAgents, selectedAgentId],
+      configuredAgents.find((agent) => agent.id === lastSelectedAgentId) ??
+      null,
+    [configuredAgents, lastSelectedAgentId],
   );
 
-  // Auto-select first configured agent
+  // Use persisted selection, fall back to first configured agent
   const effectiveSelectedId =
-    selectedAgentId ??
-    configuredAgents.find((a) => a.commandConfigured)?.id ??
+    (selectedAgent ? lastSelectedAgentId : null) ??
     configuredAgents[0]?.id ??
     null;
 
@@ -148,7 +149,7 @@ function AgentSelectionView() {
                   configuredAgents.map((agent) => (
                     <DropdownMenuItem
                       key={agent.id}
-                      onClick={() => setSelectedAgentId(agent.id)}
+                      onClick={() => void setLastSelectedAgent(agent.id)}
                     >
                       {agent.name}
                     </DropdownMenuItem>

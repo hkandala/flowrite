@@ -18,6 +18,18 @@ pub fn get_base_dir(app_handle: &AppHandle) -> Result<PathBuf, String> {
 }
 
 /// converts a relative path to an absolute path within the flowrite base directory.
+/// rejects absolute paths and paths that escape the base directory.
 pub fn resolve_path(app_handle: &AppHandle, relative_path: &str) -> Result<PathBuf, String> {
-    Ok(get_base_dir(app_handle)?.join(relative_path))
+    let base = get_base_dir(app_handle)?;
+    let resolved = base.join(relative_path);
+
+    // ensure the resolved path is still within the base directory
+    if !resolved.starts_with(&base) {
+        return Err(format!(
+            "path '{}' resolves outside the base directory",
+            relative_path
+        ));
+    }
+
+    Ok(resolved)
 }

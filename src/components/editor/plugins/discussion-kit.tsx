@@ -1,11 +1,14 @@
 import type { TComment } from "@/components/ui/comment";
 
-import { nanoid } from "platejs";
+import { customAlphabet } from "nanoid";
 import { createPlatePlugin } from "platejs/react";
+
+const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz";
+const discussionNanoid = customAlphabet(alphabet, 4);
 
 /** Generate a short stable ID for persisting discussions across sessions. */
 export function generateDiscussionId(): string {
-  return nanoid(5);
+  return discussionNanoid();
 }
 
 export type TDiscussion = {

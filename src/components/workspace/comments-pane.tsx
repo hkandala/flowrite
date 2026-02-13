@@ -3,16 +3,18 @@ import * as React from "react";
 import { getDraftCommentKey } from "@platejs/comment";
 import { CommentPlugin } from "@platejs/comment/react";
 import { MessageSquarePlus, MessageSquareText, Plus } from "lucide-react";
-import { HistoryApi, nanoid } from "platejs";
+import { HistoryApi } from "platejs";
 import { Plate, useEditorRef, usePluginOption } from "platejs/react";
 
 import {
   useWorkspaceStore,
   persistActiveEditorMetadata,
+  markActiveEditorDirty,
 } from "@/store/workspace-store";
 import {
   type TDiscussion,
   discussionPlugin,
+  generateDiscussionId,
 } from "@/components/editor/plugins/discussion-kit";
 import { commentPlugin } from "@/components/editor/plugins/comment-kit";
 import { Badge } from "@/components/ui/badge";
@@ -100,7 +102,10 @@ function CommentsList() {
 
   const activeRef = React.useRef<HTMLDivElement>(null);
   const [showDocComment, setShowDocComment] = React.useState(false);
-  const docCommentId = React.useMemo(() => nanoid(), [showDocComment]);
+  const docCommentId = React.useMemo(
+    () => generateDiscussionId(),
+    [showDocComment],
+  );
 
   // Close doc-level form when a draft becomes active
   React.useEffect(() => {
@@ -218,6 +223,7 @@ function CommentsList() {
                 placeholder="add a comment..."
                 onCancel={cancelDraft}
                 onDiscussionChange={persistActiveEditorMetadata}
+                onContentDirty={markActiveEditorDirty}
                 onSubmitted={(id) => {
                   if (id) setActiveCommentId(id);
                 }}
@@ -275,6 +281,7 @@ function DiscussionCard({
               index={index}
               setEditingId={setEditingId}
               onDiscussionChange={persistActiveEditorMetadata}
+              onContentDirty={markActiveEditorDirty}
             />
           </React.Fragment>
         ))}

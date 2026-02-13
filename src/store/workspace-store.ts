@@ -20,6 +20,7 @@ interface EditorCallbacks {
   toggleMaximize: () => void;
   toggleFullWidth: () => void;
   persistMetadata: () => void;
+  markContentDirty: () => void;
 }
 
 const editorRegistry = new Map<string, EditorCallbacks>();
@@ -596,6 +597,14 @@ export function persistActiveEditorMetadata() {
 
   const callbacks = editorRegistry.get(dockviewApi.activePanel.id);
   callbacks?.persistMetadata();
+}
+
+/** Mark the active editor panel as dirty (needs full save). */
+export function markActiveEditorDirty() {
+  const { dockviewApi } = useWorkspaceStore.getState();
+  if (!dockviewApi?.activePanel) return;
+  const callbacks = editorRegistry.get(dockviewApi.activePanel.id);
+  callbacks?.markContentDirty();
 }
 function nextUntitledNumber(dockviewApi: DockviewApi): number {
   const usedNumbers = new Set<number>();

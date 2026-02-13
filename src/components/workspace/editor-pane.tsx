@@ -80,7 +80,10 @@ function richTextToPlain(value: unknown[]): string {
 
 /**
  * Serialize discussions using inline HTML comment markers.
- * Returns YAML-ready data AND a cloned Slate tree with markers injected.
+ * Returns YAML-ready data AND a cloned Slate tree with placeholders injected.
+ * Placeholders are alphanumeric so the markdown serializer won't escape them.
+ * Call `replaceMarkerPlaceholders()` on the serialized markdown to convert
+ * placeholders to real `<!--id-->` / `<!--/id-->` markers.
  */
 function serializeDiscussionsWithMarkers(
   editor: ReturnType<typeof createPlateEditor>,
@@ -179,10 +182,10 @@ function serializeDiscussionsWithMarkers(
     return a.type === "close" ? -1 : 1;
   });
 
-  // Inject markers into cloned tree
+  // Inject placeholders into cloned tree (alphanumeric to avoid escaping)
   for (const inj of injections) {
     const marker =
-      inj.type === "open" ? `<!--${inj.id}-->` : `<!--/${inj.id}-->`;
+      inj.type === "open" ? `CMTO${inj.id}CMTE` : `CMTC${inj.id}CMTE`;
     const block = markedValue[inj.blockIdx];
     if (!block?.children) continue;
 
@@ -261,6 +264,13 @@ function serializeDiscussionsWithMarkers(
   return { serialized, markedValue };
 }
 
+/** Replace alphanumeric placeholders with real HTML comment markers. */
+function replaceMarkerPlaceholders(markdown: string): string {
+  return markdown
+    .replace(/CMTO([\w-]+?)CMTE/g, "<!--$1-->")
+    .replace(/CMTC([\w-]+?)CMTE/g, "<!--/$1-->");
+}
+
 /**
  * Extract inline HTML comment markers from markdown and return clean markdown.
  */
@@ -268,7 +278,7 @@ function extractAndStripMarkers(markdown: string): {
   cleanMarkdown: string;
   markers: Array<{ id: string; textContent: string }>;
 } {
-  const markerPattern = /<!--(\w+)-->/g;
+  const markerPattern = /<!--([\w-]+)-->/g;
   const openPositions = new Map<string, number>();
   const markers: Array<{ id: string; textContent: string }> = [];
 
@@ -308,14 +318,14 @@ function extractAndStripMarkers(markdown: string): {
       const textStart = openPositions.get(m.id)!;
       let textContent = markdown.slice(textStart, m.start);
       // Strip any nested markers from the extracted text
-      textContent = textContent.replace(/<!--\/?\w+-->/g, "");
+      textContent = textContent.replace(/<!--\/?[\w-]+-->/g, "");
       markers.push({ id: m.id, textContent });
       openPositions.delete(m.id);
     }
   }
 
   // Remove all markers from markdown
-  const cleanMarkdown = markdown.replace(/<!--\/?\w+-->/g, "");
+  const cleanMarkdown = markdown.replace(/<!--\/?[\w-]+-->/g, "");
 
   return { cleanMarkdown, markers };
 }
@@ -619,6 +629,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
   // dirty tracking refs
   const savedUndoRef = useRef<unknown>(null);
+  const commentDirtyRef = useRef(false);
   const initialLoadCompleteRef = useRef(false);
 
   const editorMaximized = useWorkspaceStore((s) => s.editorMaximized);
@@ -654,9 +665,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       editor,
       discussions,
     );
-    const markdown = editor
-      .getApi(MarkdownPlugin)
-      .markdown.serialize({ value: markedValue });
+    const markdown = replaceMarkerPlaceholders(
+      editor.getApi(MarkdownPlugin).markdown.serialize({ value: markedValue }),
+    );
 
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
@@ -685,6 +696,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     // update dirty tracking
     savedUndoRef.current = lastElement(editor.history.undos) ?? null;
+    commentDirtyRef.current = false;
     markClean(props.api.id);
   }, [
     editor,
@@ -722,9 +734,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       editor,
       discussions,
     );
-    const markdown = editor
-      .getApi(MarkdownPlugin)
-      .markdown.serialize({ value: markedValue });
+    const markdown = replaceMarkerPlaceholders(
+      editor.getApi(MarkdownPlugin).markdown.serialize({ value: markedValue }),
+    );
     const isExtPath = !(await isInternalPath(selectedPath));
 
     if (serialized.length > 0) {
@@ -785,6 +797,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     // update dirty tracking
     savedUndoRef.current = lastElement(editor.history.undos) ?? null;
+    commentDirtyRef.current = false;
     markClean(props.api.id);
   }, [editor, props.api, props.params.title, markClean]);
 
@@ -858,6 +871,11 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     toggleEditorMaximized();
   }, [editorMaximized, props.api, toggleEditorMaximized]);
 
+  const markContentDirty = useCallback(() => {
+    commentDirtyRef.current = true;
+    markDirty(props.api.id);
+  }, [props.api.id, markDirty]);
+
   useEffect(() => {
     registerEditor(props.api.id, {
       save: performSave,
@@ -866,6 +884,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       toggleMaximize,
       toggleFullWidth,
       persistMetadata: triggerPersistMetadata,
+      markContentDirty,
     });
     return () => unregisterEditor(props.api.id);
   }, [
@@ -876,6 +895,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     toggleMaximize,
     toggleFullWidth,
     triggerPersistMetadata,
+    markContentDirty,
   ]);
 
   // load file content and create editor
@@ -1051,7 +1071,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     if (!initialLoadCompleteRef.current || !editor) return;
 
     const currentTop = lastElement(editor.history.undos) ?? null;
-    if (currentTop !== savedUndoRef.current) {
+    if (currentTop !== savedUndoRef.current || commentDirtyRef.current) {
       markDirty(props.api.id);
     } else {
       markClean(props.api.id);

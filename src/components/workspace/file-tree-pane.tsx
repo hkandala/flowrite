@@ -593,6 +593,9 @@ export function FileTreePane() {
   useEffect(() => {
     if (!activeFilePath) return;
 
+    // skip external files (absolute paths) — they're not in the file tree
+    if (activeFilePath.startsWith("/")) return;
+
     const parentPaths: string[] = [ROOT_ID];
     const parts = activeFilePath.split("/");
     for (let i = 1; i < parts.length; i++) {
