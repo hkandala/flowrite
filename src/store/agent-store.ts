@@ -1,8 +1,8 @@
-import { invoke, Channel } from "@tauri-apps/api/core";
+import { Channel, invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Store } from "@tauri-apps/plugin-store";
-import { create } from "zustand";
 import { toast } from "sonner";
+import { create } from "zustand";
 
 import { SETTINGS_STORE_PATH } from "@/lib/constants";
 import { getBaseDir } from "@/lib/utils";
@@ -31,6 +31,24 @@ export interface AgentConfig {
 }
 
 export interface SessionMode {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+export interface ModelInfo {
+  modelId: string;
+  name: string;
+  description?: string;
+}
+
+export interface ConnectionError {
+  kind: "auth_required" | "internal" | "crashed" | "timeout" | "unknown";
+  message: string;
+  authMethods?: AuthMethodInfo[];
+}
+
+export interface AuthMethodInfo {
   id: string;
   name: string;
   description?: string;
@@ -89,15 +107,18 @@ interface AgentState {
   activeAgentId: string | null;
   activeSessionId: string | null;
   connectionStatus: ConnectionStatus;
-  connectionError: string | null;
+  connectionError: ConnectionError | null;
   agentName: string | null;
 
   availableModes: SessionMode[];
   currentModeId: string | null;
   availableCommands: SlashCommand[];
+  availableModels: ModelInfo[];
+  currentModelId: string | null;
 
   messages: ChatMessage[];
   isResponding: boolean;
+  isCreatingSession: boolean;
 
   pendingPermission: PermissionRequest | null;
   inputText: string;
@@ -118,11 +139,13 @@ interface AgentActions {
 
   connect: (agentId: string) => Promise<void>;
   disconnect: () => void;
+  endSessionAndGoBack: () => void;
   sendPrompt: (text: string) => Promise<void>;
   respondPermission: (requestId: string, optionId: string) => Promise<void>;
   cancelPrompt: () => Promise<void>;
   newChat: () => Promise<void>;
   setCurrentModeId: (modeId: string | null) => void;
+  setCurrentModelId: (modelId: string | null) => void;
 
   setInputText: (text: string) => void;
 }
@@ -130,18 +153,24 @@ interface AgentActions {
 type AgentStore = AgentState & AgentActions;
 
 interface AgentInfoResponse {
+  agentId: string;
   name: string;
   version: string;
+  authMethods: AuthMethodInfo[];
 }
 
 interface SessionInfoResponse {
   sessionId: string;
   availableModes: SessionMode[];
+  currentModeId: string | null;
   availableCommands: SlashCommand[];
+  availableModels: ModelInfo[];
+  currentModelId: string | null;
 }
 
 interface AgentCrashedPayload {
   agentId: string;
+  kind?: string;
   message?: string;
 }
 
@@ -222,6 +251,39 @@ const getSettingsStore = async (): Promise<Store> => {
 const createId = () =>
   globalThis.crypto?.randomUUID?.() ??
   `${Date.now()}-${Math.random().toString(16).slice(2)}`;
+
+const parseConnectionError = (error: unknown): ConnectionError => {
+  if (typeof error === "string") {
+    try {
+      const parsed = JSON.parse(error);
+      if (
+        parsed &&
+        typeof parsed.kind === "string" &&
+        typeof parsed.message === "string"
+      ) {
+        return parsed as ConnectionError;
+      }
+    } catch {
+      // not JSON, fall through
+    }
+    return { kind: "unknown", message: error };
+  }
+  const message = error instanceof Error ? error.message : "unknown error";
+  // try parsing the error message as JSON (tauri wraps errors as strings)
+  try {
+    const parsed = JSON.parse(message);
+    if (
+      parsed &&
+      typeof parsed.kind === "string" &&
+      typeof parsed.message === "string"
+    ) {
+      return parsed as ConnectionError;
+    }
+  } catch {
+    // not JSON
+  }
+  return { kind: "unknown", message };
+};
 
 const normalizeToolStatus = (status: string): ToolCallStatus => {
   if (status === "in_progress") return "in_progress";
@@ -384,15 +446,20 @@ const ensureCrashListener = () => {
       return;
     }
 
-    const message =
+    const rawMessage =
       event.payload.message ?? "agent process stopped unexpectedly";
+    const kind = event.payload.kind ?? "crashed";
+    const connectionError: ConnectionError = {
+      kind: kind as ConnectionError["kind"],
+      message: rawMessage,
+    };
     useAgentStore.setState({
       connectionStatus: "error",
-      connectionError: message,
+      connectionError,
       isResponding: false,
       pendingPermission: null,
     });
-    toast.error("agent crashed", { description: message });
+    toast.error("agent crashed", { description: rawMessage });
   });
 };
 
@@ -410,9 +477,12 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   availableModes: [],
   currentModeId: null,
   availableCommands: [],
+  availableModels: [],
+  currentModelId: null,
 
   messages: [],
   isResponding: false,
+  isCreatingSession: false,
   pendingPermission: null,
   inputText: "",
 
@@ -477,7 +547,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         error instanceof Error ? error.message : "failed to initialize agents";
       set({
         connectionStatus: "error",
-        connectionError: message,
+        connectionError: { kind: "unknown", message },
       });
       toast.error("agent setup failed", { description: message });
     }
@@ -544,6 +614,8 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
             availableModes: [],
             currentModeId: null,
             availableCommands: [],
+            availableModels: [],
+            currentModelId: null,
             messages: [],
             pendingPermission: null,
             isResponding: false,
@@ -561,14 +633,20 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     if (!agent) {
       set({
         connectionStatus: "error",
-        connectionError: "selected agent not found",
+        connectionError: {
+          kind: "unknown",
+          message: "selected agent not found",
+        },
       });
       return;
     }
     if (!agent.commandConfigured || agent.command.trim().length === 0) {
       set({
         connectionStatus: "error",
-        connectionError: "configure the agent command before connecting",
+        connectionError: {
+          kind: "unknown",
+          message: "configure the agent command before connecting",
+        },
       });
       return;
     }
@@ -576,43 +654,85 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     set({
       connectionStatus: "connecting",
       connectionError: null,
-      activeAgentId: agentId,
       selectedAgentId: agentId,
+      agentName: agent.name,
+      messages: [],
+      isResponding: false,
+      pendingPermission: null,
+      inputText: "",
     });
 
     try {
       const info = await invoke<AgentInfoResponse>("acp_connect", {
-        agentId,
         command: agent.command,
         env: agent.env,
       });
-      const cwd = await getBaseDir();
-      const session = await invoke<SessionInfoResponse>("acp_new_session", {
-        agentId,
-        cwd,
-      });
+      if (get().connectionStatus !== "connecting") return;
+
+      let session: SessionInfoResponse;
+      try {
+        const cwd = await getBaseDir();
+        session = await invoke<SessionInfoResponse>("acp_new_session", {
+          agentId: info.agentId,
+          cwd,
+        });
+      } catch (sessionError) {
+        if (get().connectionStatus !== "connecting") return;
+        const connectionError = parseConnectionError(sessionError);
+        if (
+          connectionError.kind === "auth_required" &&
+          info.authMethods?.length > 0
+        ) {
+          connectionError.authMethods = info.authMethods;
+        }
+        set({
+          connectionStatus: "error",
+          connectionError,
+          activeAgentId: null,
+          activeSessionId: null,
+          isResponding: false,
+        });
+        if (connectionError.kind !== "auth_required") {
+          toast.error("connection failed", {
+            description: connectionError.message,
+          });
+        }
+        return;
+      }
+      if (get().connectionStatus !== "connecting") return;
 
       set({
-        activeAgentId: agentId,
+        activeAgentId: info.agentId,
+        selectedAgentId: agentId,
         activeSessionId: session.sessionId,
         connectionStatus: "connected",
         connectionError: null,
         agentName: info.name,
         availableModes: session.availableModes ?? [],
-        currentModeId: session.availableModes?.[0]?.id ?? null,
-        availableCommands: session.availableCommands ?? [],
+        currentModeId:
+          session.currentModeId ?? session.availableModes?.[0]?.id ?? null,
+        availableCommands:
+          session.availableCommands?.length > 0
+            ? session.availableCommands
+            : get().availableCommands,
+        availableModels: session.availableModels ?? [],
+        currentModelId: session.currentModelId ?? null,
         messages: [],
         isResponding: false,
         pendingPermission: null,
       });
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "failed to connect to agent";
+      if (get().connectionStatus !== "connecting") return;
+      const connectionError = parseConnectionError(error);
       set({
         connectionStatus: "error",
-        connectionError: message,
+        connectionError,
+        activeAgentId: null,
         activeSessionId: null,
         isResponding: false,
+      });
+      toast.error("connection failed", {
+        description: connectionError.message,
       });
     }
   },
@@ -627,11 +747,39 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       availableModes: [],
       currentModeId: null,
       availableCommands: [],
+      availableModels: [],
+      currentModelId: null,
       messages: [],
       isResponding: false,
       pendingPermission: null,
       inputText: "",
     }),
+
+  endSessionAndGoBack: () => {
+    const { activeAgentId, activeSessionId, isResponding } = get();
+    if (isResponding && activeAgentId && activeSessionId) {
+      void invoke("acp_cancel", {
+        agentId: activeAgentId,
+        sessionId: activeSessionId,
+      }).catch(() => {});
+    }
+    set({
+      activeAgentId: null,
+      activeSessionId: null,
+      connectionStatus: "disconnected",
+      connectionError: null,
+      agentName: null,
+      availableModes: [],
+      currentModeId: null,
+      availableCommands: [],
+      availableModels: [],
+      currentModelId: null,
+      messages: [],
+      isResponding: false,
+      pendingPermission: null,
+      inputText: "",
+    });
+  },
 
   sendPrompt: async (rawText) => {
     const state = get();
@@ -897,33 +1045,82 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
   },
 
   newChat: async () => {
-    const { activeAgentId, connectionStatus } = get();
+    const { activeAgentId, activeSessionId, connectionStatus, isResponding } =
+      get();
     if (!activeAgentId || connectionStatus !== "connected") {
       set({ messages: [] });
       return;
     }
 
+    set({
+      isCreatingSession: true,
+      isResponding: false,
+      pendingPermission: null,
+      messages: [],
+    });
+
+    if (isResponding && activeSessionId) {
+      try {
+        await invoke("acp_cancel", {
+          agentId: activeAgentId,
+          sessionId: activeSessionId,
+        });
+      } catch {
+        // ignore cancel errors
+      }
+    }
+
     try {
       const cwd = await getBaseDir();
-      const session = await invoke<SessionInfoResponse>("acp_new_session", {
-        agentId: activeAgentId,
-        cwd,
-      });
+
+      // After cancelling a prompt, the backend needs a moment to finish
+      // processing the cancellation before accepting a new session.
+      // Retry a few times with a short delay.
+      let session: SessionInfoResponse | null = null;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        try {
+          session = await invoke<SessionInfoResponse>("acp_new_session", {
+            agentId: activeAgentId,
+            cwd,
+          });
+          break;
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          if (attempt < 4 && msg.includes("while a prompt is running")) {
+            await new Promise((r) => setTimeout(r, 200));
+            continue;
+          }
+          throw err;
+        }
+      }
+
+      if (!session) {
+        throw new Error("failed to create new session after retries");
+      }
+
       set({
         activeSessionId: session.sessionId,
         messages: [],
         pendingPermission: null,
         isResponding: false,
+        isCreatingSession: false,
         availableModes: session.availableModes ?? [],
-        currentModeId: session.availableModes?.[0]?.id ?? null,
-        availableCommands: session.availableCommands ?? [],
+        currentModeId:
+          session.currentModeId ?? session.availableModes?.[0]?.id ?? null,
+        availableCommands:
+          session.availableCommands?.length > 0
+            ? session.availableCommands
+            : get().availableCommands,
+        availableModels: session.availableModels ?? [],
+        currentModelId: session.currentModelId ?? null,
       });
     } catch (error) {
       const message =
         error instanceof Error ? error.message : "failed to start new chat";
       set({
+        isCreatingSession: false,
         connectionStatus: "error",
-        connectionError: message,
+        connectionError: { kind: "unknown", message },
       });
     }
   },
@@ -947,6 +1144,28 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       const message =
         error instanceof Error ? error.message : "failed to set mode";
       toast.error("mode update failed", { description: message });
+    });
+  },
+
+  setCurrentModelId: (modelId) => {
+    set({ currentModelId: modelId });
+    const { activeAgentId, activeSessionId, connectionStatus } = get();
+    if (
+      !modelId ||
+      !activeAgentId ||
+      !activeSessionId ||
+      connectionStatus !== "connected"
+    ) {
+      return;
+    }
+    void invoke("acp_set_model", {
+      agentId: activeAgentId,
+      sessionId: activeSessionId,
+      modelId,
+    }).catch((error) => {
+      const message =
+        error instanceof Error ? error.message : "failed to set model";
+      toast.error("model update failed", { description: message });
     });
   },
 

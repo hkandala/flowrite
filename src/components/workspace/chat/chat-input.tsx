@@ -1,38 +1,136 @@
-import { useEffect, useMemo, useState, type KeyboardEvent } from "react";
-import { ArrowUp, ChevronDown, Square } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, Square } from "lucide-react";
+import { type KeyboardEvent, useEffect, useMemo, useState } from "react";
 import TextareaAutosize from "react-textarea-autosize";
 
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from "@/components/ui/dropdown-menu";
+  Command,
+  CommandEmpty,
+  CommandInput,
+  CommandItem,
+  CommandList,
+} from "@/components/ui/command";
 import {
   InputGroup,
   InputGroupAddon,
   InputGroupButton,
 } from "@/components/ui/input-group";
+import {
+  Popover,
+  PopoverContent,
+  PopoverTrigger,
+} from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/store/agent-store";
 
 const MAX_ROWS = 6;
+
+interface ComboboxItem {
+  id: string;
+  name: string;
+  description?: string;
+}
+
+function SelectorCombobox({
+  items,
+  selectedId,
+  onSelect,
+  label,
+  disabled,
+}: {
+  items: ComboboxItem[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+  label: string;
+  disabled: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [search, setSearch] = useState("");
+
+  const selected = items.find((item) => item.id === selectedId);
+
+  const filtered = useMemo(() => {
+    if (!search) return items;
+    const query = search.toLowerCase();
+    return items.filter(
+      (item) =>
+        item.name.toLowerCase().includes(query) ||
+        item.description?.toLowerCase().includes(query),
+    );
+  }, [items, search]);
+
+  return (
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger asChild>
+        <InputGroupButton size="sm" variant="ghost" disabled={disabled}>
+          <span className="truncate max-w-48">{selected?.name ?? label}</span>
+          <ChevronDown className="h-3.5 w-3.5" />
+        </InputGroupButton>
+      </PopoverTrigger>
+      <PopoverContent
+        align="start"
+        className="w-72 p-0"
+        onCloseAutoFocus={(e) => e.preventDefault()}
+      >
+        <Command>
+          <CommandInput
+            placeholder={`search ${label}...`}
+            value={search}
+            onValueChange={setSearch}
+          />
+          <CommandList>
+            <CommandEmpty>no {label}s found</CommandEmpty>
+            {filtered.map((item) => (
+              <CommandItem
+                key={item.id}
+                value={item.id}
+                onSelect={() => {
+                  onSelect(item.id);
+                  setOpen(false);
+                  setSearch("");
+                }}
+              >
+                <div
+                  className="flex flex-col gap-0.5 min-w-0 overflow-hidden flex-1"
+                  title={item.name}
+                >
+                  <span className="truncate">{item.name}</span>
+                  {item.description && (
+                    <span className="text-xs text-muted-foreground line-clamp-2">
+                      {item.description}
+                    </span>
+                  )}
+                </div>
+                {item.id === selectedId && (
+                  <Check className="h-3.5 w-3.5 shrink-0" />
+                )}
+              </CommandItem>
+            ))}
+          </CommandList>
+        </Command>
+      </PopoverContent>
+    </Popover>
+  );
+}
 
 export function ChatInput() {
   const connectionStatus = useAgentStore((s) => s.connectionStatus);
   const inputText = useAgentStore((s) => s.inputText);
   const availableModes = useAgentStore((s) => s.availableModes);
   const currentModeId = useAgentStore((s) => s.currentModeId);
+  const availableModels = useAgentStore((s) => s.availableModels);
+  const currentModelId = useAgentStore((s) => s.currentModelId);
   const availableCommands = useAgentStore((s) => s.availableCommands);
   const isResponding = useAgentStore((s) => s.isResponding);
+  const isCreatingSession = useAgentStore((s) => s.isCreatingSession);
   const setInputText = useAgentStore((s) => s.setInputText);
   const setCurrentModeId = useAgentStore((s) => s.setCurrentModeId);
+  const setCurrentModelId = useAgentStore((s) => s.setCurrentModelId);
   const sendPrompt = useAgentStore((s) => s.sendPrompt);
   const cancelPrompt = useAgentStore((s) => s.cancelPrompt);
 
   const [selectedCommandIndex, setSelectedCommandIndex] = useState(0);
 
-  const disabled = connectionStatus !== "connected";
+  const disabled = connectionStatus !== "connected" || isCreatingSession;
 
   const slashQuery = useMemo(() => {
     if (!inputText.startsWith("/")) return null;
@@ -100,13 +198,31 @@ export function ChatInput() {
     }
   };
 
-  const currentMode = availableModes.find((mode) => mode.id === currentModeId);
+  const modeItems: ComboboxItem[] = useMemo(
+    () =>
+      availableModes.map((mode) => ({
+        id: mode.id,
+        name: mode.name,
+        description: mode.description,
+      })),
+    [availableModes],
+  );
+
+  const modelItems: ComboboxItem[] = useMemo(
+    () =>
+      availableModels.map((model) => ({
+        id: model.modelId,
+        name: model.name,
+        description: model.description,
+      })),
+    [availableModels],
+  );
 
   return (
     <div className="shrink-0 pr-3 pb-4">
       <div className="relative">
         {showSlashMenu && (
-          <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 rounded-md border border-border/70 bg-background shadow-lg max-h-48 overflow-y-auto z-20 p-1">
+          <div className="absolute bottom-[calc(100%+0.5rem)] left-0 right-0 rounded-md border glass-surface glass-border-subtle shadow-lg max-h-48 overflow-y-auto z-20 p-1">
             {filteredCommands.map((command, index) => (
               <button
                 key={command.name}
@@ -134,52 +250,34 @@ export function ChatInput() {
         <InputGroup className="bg-transparent dark:bg-transparent rounded-xl">
           <TextareaAutosize
             data-slot="input-group-control"
-            className="field-sizing-content min-h-15 w-full resize-none rounded-md bg-transparent p-4 text-sm transition-[color,box-shadow] outline-none placeholder:text-muted-foreground disabled:cursor-not-allowed disabled:opacity-50"
+            className="field-sizing-content min-h-15 w-full resize-none rounded-md bg-transparent p-4 text-sm transition-[color,box-shadow] outline-none disabled:cursor-not-allowed disabled:opacity-50"
             value={inputText}
             disabled={disabled}
             placeholder={
-              disabled
-                ? "connect an agent to start chatting..."
-                : "type a message..."
+              disabled ? "starting session..." : "ask ai anything..."
             }
             maxRows={MAX_ROWS}
             onChange={(event) => setInputText(event.target.value)}
             onKeyDown={handleKeyDown}
           />
           <InputGroupAddon align="block-end">
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <InputGroupButton size="sm" variant="ghost" disabled={disabled}>
-                  <span className="truncate max-w-48">
-                    {currentMode?.name ?? "mode"}
-                  </span>
-                  <ChevronDown className="h-3.5 w-3.5" />
-                </InputGroupButton>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="start" className="min-w-52 max-w-72">
-                {availableModes.length === 0 ? (
-                  <DropdownMenuItem disabled>
-                    no modes available
-                  </DropdownMenuItem>
-                ) : (
-                  availableModes.map((mode) => (
-                    <DropdownMenuItem
-                      key={mode.id}
-                      onClick={() => setCurrentModeId(mode.id)}
-                    >
-                      <div className="flex flex-col gap-0.5 min-w-0 overflow-hidden">
-                        <span className="truncate">{mode.name}</span>
-                        {mode.description && (
-                          <span className="text-xs text-muted-foreground line-clamp-2">
-                            {mode.description}
-                          </span>
-                        )}
-                      </div>
-                    </DropdownMenuItem>
-                  ))
-                )}
-              </DropdownMenuContent>
-            </DropdownMenu>
+            <SelectorCombobox
+              items={modeItems}
+              selectedId={currentModeId}
+              onSelect={setCurrentModeId}
+              label="mode"
+              disabled={disabled}
+            />
+
+            {availableModels.length > 0 && (
+              <SelectorCombobox
+                items={modelItems}
+                selectedId={currentModelId}
+                onSelect={setCurrentModelId}
+                label="model"
+                disabled={disabled}
+              />
+            )}
 
             <InputGroupButton
               className="ml-auto"

@@ -182,7 +182,7 @@ export function AgentSettingsModal({
                   <Textarea
                     rows={2}
                     value={envDrafts[agent.id] ?? ""}
-                    className="font-mono text-xs whitespace-nowrap overflow-x-auto placeholder:text-muted-foreground/50"
+                    className="font-mono text-xs whitespace-nowrap overflow-x-auto"
                     placeholder={"API_KEY=sk-...\nANOTHER_VAR=value"}
                     onChange={(event) =>
                       setEnvDrafts((drafts) => ({
@@ -269,7 +269,7 @@ export function AgentSettingsModal({
               <Textarea
                 rows={2}
                 value={customEnv}
-                className="font-mono text-xs whitespace-nowrap overflow-x-auto placeholder:text-muted-foreground/50"
+                className="font-mono text-xs whitespace-nowrap overflow-x-auto"
                 placeholder={"API_KEY=sk-...\nANOTHER_VAR=value"}
                 onChange={(event) => setCustomEnv(event.target.value)}
               />

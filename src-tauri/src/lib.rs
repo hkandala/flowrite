@@ -66,6 +66,7 @@ pub fn run() {
             acp::acp_respond_permission,
             acp::acp_cancel,
             acp::acp_set_mode,
+            acp::acp_set_model,
         ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")

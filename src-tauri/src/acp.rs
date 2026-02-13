@@ -12,7 +12,7 @@ use sacp::{
     ClientToAgent, SessionMessage,
 };
 use sacp_tokio::{AcpAgent, LineDirection};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use tauri::{ipc::Channel, AppHandle, Emitter, Manager, State};
 use tokio::sync::{mpsc, oneshot};
 
@@ -27,6 +27,10 @@ pub(crate) struct AcpStateInner {
 struct AgentHandle {
     /// Send commands into the background run_until task.
     command_tx: mpsc::Sender<AgentCommand>,
+    /// Timestamp of the last interaction with this agent.
+    last_used: std::time::Instant,
+    /// Last JSON-RPC error captured from the wire (for fallback error messages).
+    captured_error: CapturedError,
 }
 
 impl Default for AcpState {
@@ -40,8 +44,18 @@ impl Default for AcpState {
 #[derive(Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentInfo {
+    pub agent_id: String,
     pub name: String,
     pub version: String,
+    pub auth_methods: Vec<AuthMethodInfo>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AuthMethodInfo {
+    pub id: String,
+    pub name: String,
+    pub description: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -49,7 +63,10 @@ pub struct AgentInfo {
 pub struct SessionInfo {
     pub session_id: String,
     pub available_modes: Vec<SessionModeInfo>,
+    pub current_mode_id: Option<String>,
     pub available_commands: Vec<SlashCommandInfo>,
+    pub available_models: Vec<ModelInfoData>,
+    pub current_model_id: Option<String>,
 }
 
 #[derive(Clone, Serialize)]
@@ -66,6 +83,22 @@ pub struct SlashCommandInfo {
     pub name: String,
     pub description: String,
     pub input_hint: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ModelInfoData {
+    pub model_id: String,
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AcpConnectionError {
+    kind: String,
+    message: String,
 }
 
 #[derive(Clone, Serialize)]
@@ -130,6 +163,7 @@ pub enum AgentEvent {
 #[serde(rename_all = "camelCase")]
 struct AgentCrashPayload {
     agent_id: String,
+    kind: String,
     message: String,
 }
 
@@ -161,6 +195,11 @@ enum AgentCommand {
         mode_id: String,
         respond_to: oneshot::Sender<Result<(), String>>,
     },
+    SetModel {
+        session_id: String,
+        model_id: String,
+        respond_to: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 struct ActivePrompt {
@@ -190,26 +229,43 @@ type InitSender = Arc<tokio::sync::Mutex<Option<oneshot::Sender<Result<AgentInfo
 
 const ACP_PROMPT_PREVIEW_CHARS: usize = 220;
 const ACP_LOG_MAX_CHARS: usize = 4000;
+const MAX_AGENT_PROCESSES: usize = 5;
+
+fn compute_agent_id(command: &str, env: &HashMap<String, String>) -> String {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    command.hash(&mut hasher);
+    let mut sorted_env: Vec<_> = env.iter().collect();
+    sorted_env.sort_by_key(|(k, _)| (*k).clone());
+    for (k, v) in sorted_env {
+        k.hash(&mut hasher);
+        v.hash(&mut hasher);
+    }
+    format!("agent-{:016x}", hasher.finish())
+}
 
 #[tauri::command]
 pub async fn acp_connect(
     app_handle: AppHandle,
     state: State<'_, AcpState>,
-    agent_id: String,
     command: String,
     env: HashMap<String, String>,
 ) -> Result<AgentInfo, String> {
+    let agent_id = compute_agent_id(&command, &env);
     log::info!(
         "[acp][{agent_id}] connect requested command='{}' env={}",
         command,
         to_json_log(&redact_env_for_logging(&env))
     );
     if let Some(existing_tx) = {
-        let inner = state.0.lock().await;
-        inner
-            .agents
-            .get(&agent_id)
-            .map(|handle| handle.command_tx.clone())
+        let mut inner = state.0.lock().await;
+        if let Some(handle) = inner.agents.get_mut(&agent_id) {
+            handle.last_used = std::time::Instant::now();
+            Some(handle.command_tx.clone())
+        } else {
+            None
+        }
     } {
         log::info!("[acp][{agent_id}] reusing existing connection");
         let info_result = request_agent_info(existing_tx).await;
@@ -225,8 +281,25 @@ pub async fn acp_connect(
         return info_result;
     }
 
+    // LRU eviction: if at capacity, remove the least recently used agent
+    {
+        let mut inner = state.0.lock().await;
+        if inner.agents.len() >= MAX_AGENT_PROCESSES {
+            let oldest = inner
+                .agents
+                .iter()
+                .min_by_key(|(_, handle)| handle.last_used)
+                .map(|(id, _)| id.clone());
+            if let Some(evict_id) = oldest {
+                log::info!("[acp][{agent_id}] evicting LRU agent '{evict_id}' (capacity={MAX_AGENT_PROCESSES})");
+                inner.agents.remove(&evict_id);
+            }
+        }
+    }
+
     let (command_tx, command_rx) = mpsc::channel(64);
     let (init_tx, init_rx) = oneshot::channel();
+    let captured_error: CapturedError = Arc::new(std::sync::Mutex::new(None));
 
     {
         let mut inner = state.0.lock().await;
@@ -234,12 +307,15 @@ pub async fn acp_connect(
             agent_id.clone(),
             AgentHandle {
                 command_tx: command_tx.clone(),
+                last_used: std::time::Instant::now(),
+                captured_error: captured_error.clone(),
             },
         );
     }
 
     let spawned_agent_id = agent_id.clone();
     let spawned_app_handle = app_handle.clone();
+    let spawned_captured_error = captured_error.clone();
     tauri::async_runtime::spawn(async move {
         run_agent_task(
             spawned_app_handle,
@@ -248,6 +324,7 @@ pub async fn acp_connect(
             env,
             command_rx,
             init_tx,
+            spawned_captured_error,
         )
         .await;
     });
@@ -285,15 +362,34 @@ pub async fn acp_new_session(
         "[acp][{agent_id}] -> client new_session {}",
         to_json_log(&serde_json::json!({ "cwd": cwd.clone() }))
     );
-    let command_tx = get_agent_command_tx(&state, &agent_id).await?;
+    let (command_tx, captured_error) = get_agent_handle_parts(&state, &agent_id).await?;
     let (respond_to, response_rx) = oneshot::channel();
     command_tx
         .send(AgentCommand::NewSession { cwd, respond_to })
         .await
         .map_err(|_| format!("agent '{agent_id}' is not running"))?;
-    let result = response_rx
-        .await
-        .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
+    let result = response_rx.await.map_err(|_| {
+        // The respond_to sender was dropped (agent crashed/exited during session creation).
+        // Check if we captured a JSON-RPC error from the wire before the crash.
+        if let Ok(guard) = captured_error.lock() {
+            if let Some(wire_err) = guard.as_ref() {
+                let kind = if wire_err.code == -32000 {
+                    "auth_required"
+                } else if wire_err.code == -32603 {
+                    "internal"
+                } else {
+                    "unknown"
+                };
+                let detail = extract_wire_error_detail(wire_err);
+                let conn_err = AcpConnectionError {
+                    kind: kind.to_string(),
+                    message: detail,
+                };
+                return connection_error_to_string(&conn_err);
+            }
+        }
+        format!("agent '{agent_id}' did not respond")
+    })?;
 
     match &result {
         Ok(session) => log::info!(
@@ -432,17 +528,61 @@ pub async fn acp_set_mode(
     result
 }
 
+#[tauri::command]
+pub async fn acp_set_model(
+    state: State<'_, AcpState>,
+    agent_id: String,
+    session_id: String,
+    model_id: String,
+) -> Result<(), String> {
+    log::info!("[acp][{agent_id}] -> client set_model session_id={session_id} model_id={model_id}");
+    let command_tx = get_agent_command_tx(&state, &agent_id).await?;
+    let (respond_to, response_rx) = oneshot::channel();
+    command_tx
+        .send(AgentCommand::SetModel {
+            session_id,
+            model_id,
+            respond_to,
+        })
+        .await
+        .map_err(|_| format!("agent '{agent_id}' is not running"))?;
+    let result = response_rx
+        .await
+        .map_err(|_| format!("agent '{agent_id}' did not respond"))?;
+
+    match &result {
+        Ok(()) => log::info!("[acp][{agent_id}] <- client set_model completed"),
+        Err(error) => log::warn!("[acp][{agent_id}] <- client set_model error: {error}"),
+    }
+
+    result
+}
+
 #[allow(clippy::type_complexity)]
 async fn get_agent_command_tx(
     state: &State<'_, AcpState>,
     agent_id: &str,
 ) -> Result<mpsc::Sender<AgentCommand>, String> {
-    let inner = state.0.lock().await;
-    inner
-        .agents
-        .get(agent_id)
-        .map(|handle| handle.command_tx.clone())
-        .ok_or_else(|| format!("agent '{agent_id}' is not connected"))
+    let mut inner = state.0.lock().await;
+    if let Some(handle) = inner.agents.get_mut(agent_id) {
+        handle.last_used = std::time::Instant::now();
+        Ok(handle.command_tx.clone())
+    } else {
+        Err(format!("agent '{agent_id}' is not connected"))
+    }
+}
+
+async fn get_agent_handle_parts(
+    state: &State<'_, AcpState>,
+    agent_id: &str,
+) -> Result<(mpsc::Sender<AgentCommand>, CapturedError), String> {
+    let mut inner = state.0.lock().await;
+    if let Some(handle) = inner.agents.get_mut(agent_id) {
+        handle.last_used = std::time::Instant::now();
+        Ok((handle.command_tx.clone(), handle.captured_error.clone()))
+    } else {
+        Err(format!("agent '{agent_id}' is not connected"))
+    }
 }
 
 async fn request_agent_info(command_tx: mpsc::Sender<AgentCommand>) -> Result<AgentInfo, String> {
@@ -468,6 +608,7 @@ async fn run_agent_task(
     env: HashMap<String, String>,
     command_rx: mpsc::Receiver<AgentCommand>,
     init_tx: oneshot::Sender<Result<AgentInfo, String>>,
+    captured_error: CapturedError,
 ) {
     let init_sender = Arc::new(tokio::sync::Mutex::new(Some(init_tx)));
     let shared = Arc::new(tokio::sync::Mutex::new(RuntimeShared::default()));
@@ -477,18 +618,19 @@ async fn run_agent_task(
         to_json_log(&redact_env_for_logging(&env))
     );
 
-    let acp_agent = match build_agent(&agent_id, command, env) {
-        Ok(agent) => agent,
-        Err(message) => {
-            log::error!("[acp][{agent_id}] failed to build agent command: {message}");
-            if let Some(init_tx) = init_sender.lock().await.take() {
-                let _ = init_tx.send(Err(message.clone()));
+    let (acp_agent, captured_models, captured_commands) =
+        match build_agent(&agent_id, command, env, captured_error.clone()) {
+            Ok(agent) => agent,
+            Err(message) => {
+                log::error!("[acp][{agent_id}] failed to build agent command: {message}");
+                if let Some(init_tx) = init_sender.lock().await.take() {
+                    let _ = init_tx.send(Err(message.clone()));
+                }
+                emit_agent_crashed(&app_handle, &agent_id, &message);
+                remove_agent_handle_from_app_state(&app_handle, &agent_id).await;
+                return;
             }
-            emit_agent_crashed(&app_handle, &agent_id, &message);
-            remove_agent_handle_from_app_state(&app_handle, &agent_id).await;
-            return;
-        }
-    };
+        };
 
     let shared_for_permissions = shared.clone();
     let permission_agent_id = agent_id.clone();
@@ -517,7 +659,15 @@ async fn run_agent_task(
                     let shared = shared.clone();
                     let init_sender = init_sender.clone();
                     move |cx| {
-                        run_agent_command_loop(loop_agent_id, cx, command_rx, shared, init_sender)
+                        run_agent_command_loop(
+                            loop_agent_id,
+                            cx,
+                            command_rx,
+                            shared,
+                            init_sender,
+                            captured_models,
+                            captured_commands,
+                        )
                     }
                 })
                 .await
@@ -542,7 +692,22 @@ async fn run_agent_task(
 
     if let Err(message) = run_result {
         log::error!("[acp][{agent_id}] background task failed: {message}");
-        emit_agent_crashed(&app_handle, &agent_id, &message);
+        // Check if we captured a structured error from the wire for a better crash message
+        let wire_err = captured_error.lock().ok().and_then(|guard| guard.clone());
+        if let Some(wire_err) = wire_err {
+            let kind = if wire_err.code == -32000 {
+                "auth_required"
+            } else if wire_err.code == -32603 {
+                "internal"
+            } else {
+                "crashed"
+            };
+            let detail = extract_wire_error_detail(&wire_err);
+            emit_agent_crashed_with_kind(&app_handle, &agent_id, kind, &detail);
+        } else {
+            let clean = clean_sacp_error_message(&message);
+            emit_agent_crashed(&app_handle, &agent_id, &clean);
+        }
     } else {
         log::info!("[acp][{agent_id}] background task ended cleanly");
     }
@@ -554,6 +719,8 @@ async fn run_agent_command_loop(
     mut command_rx: mpsc::Receiver<AgentCommand>,
     shared: Arc<tokio::sync::Mutex<RuntimeShared>>,
     init_sender: InitSender,
+    captured_models: CapturedModels,
+    captured_commands: CapturedCommands,
 ) -> Result<(), sacp::Error> {
     log::info!(
         "[acp][{agent_id}] -> initialize protocol={:?}",
@@ -571,7 +738,7 @@ async fn run_agent_command_loop(
         to_json_log(&init_response)
     );
 
-    let info = to_agent_info(&init_response);
+    let info = to_agent_info(&agent_id, &init_response);
     log::info!(
         "[acp][{agent_id}] resolved agent info={}",
         to_json_log(&info)
@@ -709,12 +876,23 @@ async fn run_agent_command_loop(
                         .build_session(PathBuf::from(cwd.clone()))
                         .block_task()
                         .start_session()
-                        .await
-                        .map_err(|e| e.to_string());
+                        .await;
                     match session {
                         Ok(session) => {
                             let session_id = session.session_id().0.to_string();
-                            let session_info = to_session_info(&session);
+                            // Brief yield to let the I/O task process any notifications
+                            // that arrive right after session/new (e.g., available_commands_update)
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                            let wire_models = captured_models
+                                .lock()
+                                .ok()
+                                .and_then(|mut guard| guard.take());
+                            let wire_commands = captured_commands
+                                .lock()
+                                .ok()
+                                .and_then(|mut guard| guard.take());
+                            let session_info =
+                                to_session_info(&session, wire_models, wire_commands);
                             sessions.insert(session_id, session);
                             log::info!(
                                 "[acp][{agent_id}] <- session/new {}",
@@ -724,7 +902,8 @@ async fn run_agent_command_loop(
                         }
                         Err(error) => {
                             log::error!("[acp][{agent_id}] <- session/new error: {error}");
-                            let _ = respond_to.send(Err(error));
+                            let conn_err = sacp_error_to_connection_error(&error);
+                            let _ = respond_to.send(Err(connection_error_to_string(&conn_err)));
                         }
                     }
                 }
@@ -847,6 +1026,33 @@ async fn run_agent_command_loop(
                     }
                     let _ = respond_to.send(mode_result);
                 }
+                AgentCommand::SetModel {
+                    session_id,
+                    model_id,
+                    respond_to,
+                } => {
+                    log::info!(
+                        "[acp][{agent_id}][session:{session_id}] -> session/set_model model_id={model_id}"
+                    );
+                    let model_result = cx
+                        .send_request(SetSessionModelRequest {
+                            session_id: session_id.clone(),
+                            model_id: model_id.clone(),
+                        })
+                        .block_task()
+                        .await
+                        .map_err(|error| error.to_string())
+                        .map(|_| ());
+                    match &model_result {
+                        Ok(()) => log::info!(
+                            "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} ok"
+                        ),
+                        Err(error) => log::warn!(
+                            "[acp][{agent_id}][session:{session_id}] <- session/set_model model_id={model_id} error: {error}"
+                        ),
+                    }
+                    let _ = respond_to.send(model_result);
+                }
             }
         }
     }
@@ -968,6 +1174,16 @@ async fn handle_command_while_prompt_running(
             );
             let _ = respond_to.send(Err(
                 "cannot change mode while a prompt is running".to_string()
+            ));
+        }
+        AgentCommand::SetModel { respond_to, .. } => {
+            log::warn!(
+                "[acp][{}][session:{}] reject model change while prompt running",
+                prompt.agent_id,
+                prompt.session_id
+            );
+            let _ = respond_to.send(Err(
+                "cannot change model while a prompt is running".to_string()
             ));
         }
     }
@@ -1411,23 +1627,38 @@ fn tool_call_locations_to_strings(locations: &[ToolCallLocation]) -> Option<Vec<
     Some(converted)
 }
 
-fn to_agent_info(response: &sacp::schema::InitializeResponse) -> AgentInfo {
+fn to_agent_info(agent_id: &str, response: &sacp::schema::InitializeResponse) -> AgentInfo {
+    let auth_methods = response
+        .auth_methods
+        .iter()
+        .map(|method| AuthMethodInfo {
+            id: method.id.0.to_string(),
+            name: method.name.clone(),
+            description: method.description.clone(),
+        })
+        .collect();
     match response.agent_info.as_ref() {
         Some(info) => AgentInfo {
+            agent_id: agent_id.to_string(),
             name: info.title.clone().unwrap_or_else(|| info.name.clone()),
             version: info.version.clone(),
+            auth_methods,
         },
         None => AgentInfo {
+            agent_id: agent_id.to_string(),
             name: "agent".to_string(),
             version: "unknown".to_string(),
+            auth_methods,
         },
     }
 }
 
 fn to_session_info(
     session: &sacp::ActiveSession<'static, sacp::link::ClientToAgent>,
+    wire_models: Option<RawSessionModels>,
+    wire_commands: Option<Vec<SlashCommandInfo>>,
 ) -> SessionInfo {
-    let (available_modes, available_commands) = session
+    let (available_modes, current_mode_id) = session
         .modes()
         .as_ref()
         .map(|modes| {
@@ -1440,14 +1671,36 @@ fn to_session_info(
                     description: mode.description.clone(),
                 })
                 .collect::<Vec<_>>();
-            (parsed_modes, Vec::new())
+            let current = Some(modes.current_mode_id.0.to_string());
+            (parsed_modes, current)
         })
-        .unwrap_or_else(|| (Vec::new(), Vec::new()));
+        .unwrap_or_else(|| (Vec::new(), None));
+
+    let available_commands = wire_commands.unwrap_or_default();
+
+    let (available_models, current_model_id) = match wire_models {
+        Some(models) => {
+            let parsed = models
+                .available_models
+                .into_iter()
+                .map(|m| ModelInfoData {
+                    name: m.name.unwrap_or_else(|| m.model_id.clone()),
+                    description: m.description,
+                    model_id: m.model_id,
+                })
+                .collect::<Vec<_>>();
+            (parsed, Some(models.current_model_id))
+        }
+        None => (Vec::new(), None),
+    };
 
     SessionInfo {
         session_id: session.session_id().0.to_string(),
         available_modes,
+        current_mode_id,
         available_commands,
+        available_models,
+        current_model_id,
     }
 }
 
@@ -1455,7 +1708,8 @@ fn build_agent(
     agent_id: &str,
     command: String,
     env: HashMap<String, String>,
-) -> Result<AcpAgent, String> {
+    captured_error: CapturedError,
+) -> Result<(AcpAgent, CapturedModels, CapturedCommands), String> {
     log::info!(
         "[acp][{agent_id}] build_agent command='{}' env={}",
         command,
@@ -1493,9 +1747,85 @@ fn build_agent(
         }
     }
     let wire_agent_id = agent_id.to_string();
-    Ok(AcpAgent::new(server).with_debug(move |line, direction| {
+    let captured_models: CapturedModels = Arc::new(std::sync::Mutex::new(None));
+    let captured_models_for_callback = captured_models.clone();
+    let captured_commands: CapturedCommands = Arc::new(std::sync::Mutex::new(None));
+    let captured_commands_for_callback = captured_commands.clone();
+    let captured_error_for_callback = captured_error.clone();
+    let agent = AcpAgent::new(server).with_debug(move |line, direction| {
         log_acp_wire_line(&wire_agent_id, direction, line);
-    }))
+        if matches!(direction, LineDirection::Stdout) {
+            if let Ok(rpc) = serde_json::from_str::<RawJsonRpcResponse>(line) {
+                if let Some(result) = rpc.result {
+                    if let Ok(session_result) =
+                        serde_json::from_value::<RawSessionNewResult>(result)
+                    {
+                        if session_result.session_id.is_some() {
+                            if let Some(models) = session_result.models {
+                                log::info!(
+                                    "[acp-wire][{}] captured models: current={} available={}",
+                                    wire_agent_id,
+                                    models.current_model_id,
+                                    models.available_models.len()
+                                );
+                                if let Ok(mut guard) = captured_models_for_callback.lock() {
+                                    *guard = Some(models);
+                                }
+                            }
+                        }
+                    }
+                }
+                if let Some(ref error) = rpc.error {
+                    log::info!(
+                        "[acp-wire][{}] captured error: code={} message={}",
+                        wire_agent_id,
+                        error.code,
+                        error.message
+                    );
+                    if let Ok(mut guard) = captured_error_for_callback.lock() {
+                        *guard = Some(error.clone());
+                    }
+                }
+            }
+            // Check for session/update notifications with available_commands_update
+            if line.contains("available_commands_update") {
+                if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                    if val.get("method").and_then(|m| m.as_str()) == Some("session/update") {
+                        if let Some(commands_val) = val.pointer("/params/update/availableCommands")
+                        {
+                            if let Ok(raw_commands) =
+                                serde_json::from_value::<Vec<RawWireCommand>>(commands_val.clone())
+                            {
+                                let slash_commands: Vec<SlashCommandInfo> = raw_commands
+                                    .into_iter()
+                                    .map(|c| {
+                                        let input_hint = c.input.and_then(|v| {
+                                            v.get("hint")
+                                                .and_then(|h| h.as_str().map(|s| s.to_string()))
+                                        });
+                                        SlashCommandInfo {
+                                            name: c.name,
+                                            description: c.description,
+                                            input_hint,
+                                        }
+                                    })
+                                    .collect();
+                                log::info!(
+                                    "[acp-wire][{}] captured commands: count={}",
+                                    wire_agent_id,
+                                    slash_commands.len()
+                                );
+                                if let Ok(mut guard) = captured_commands_for_callback.lock() {
+                                    *guard = Some(slash_commands);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    Ok((agent, captured_models, captured_commands))
 }
 
 async fn resolve_permission_selection(
@@ -1549,9 +1879,14 @@ async fn remove_agent_handle_from_app_state(app_handle: &AppHandle, agent_id: &s
 }
 
 fn emit_agent_crashed(app_handle: &AppHandle, agent_id: &str, message: &str) {
-    log::error!("[acp][{agent_id}] agent crashed: {message}");
+    emit_agent_crashed_with_kind(app_handle, agent_id, "crashed", message);
+}
+
+fn emit_agent_crashed_with_kind(app_handle: &AppHandle, agent_id: &str, kind: &str, message: &str) {
+    log::error!("[acp][{agent_id}] agent crashed kind={kind}: {message}");
     let payload = AgentCrashPayload {
         agent_id: agent_id.to_string(),
+        kind: kind.to_string(),
         message: message.to_string(),
     };
     let _ = app_handle.emit("acp-agent-crashed", payload);
@@ -1610,5 +1945,161 @@ fn permission_option_kind_to_string(kind: PermissionOptionKind) -> String {
         PermissionOptionKind::RejectOnce => "reject_once".to_string(),
         PermissionOptionKind::RejectAlways => "reject_always".to_string(),
         _ => "allow_once".to_string(),
+    }
+}
+
+fn sacp_error_to_connection_error(error: &sacp::Error) -> AcpConnectionError {
+    use sacp::schema::ErrorCode;
+    let kind = match error.code {
+        ErrorCode::AuthRequired => "auth_required",
+        ErrorCode::InternalError => "internal",
+        _ => "unknown",
+    };
+    let message = clean_sacp_error_message(&error.to_string());
+    AcpConnectionError {
+        kind: kind.to_string(),
+        message,
+    }
+}
+
+fn connection_error_to_string(error: &AcpConnectionError) -> String {
+    serde_json::to_string(error).unwrap_or_else(|_| error.message.clone())
+}
+
+/// Types for wire-level capture of models from session/new response.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSessionNewResult {
+    session_id: Option<String>,
+    #[serde(default)]
+    models: Option<RawSessionModels>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawSessionModels {
+    current_model_id: String,
+    available_models: Vec<RawModelInfo>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawModelInfo {
+    model_id: String,
+    #[serde(default)]
+    name: Option<String>,
+    #[serde(default)]
+    description: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct RawJsonRpcResponse {
+    result: Option<serde_json::Value>,
+    error: Option<RawJsonRpcError>,
+}
+
+#[derive(Clone, Deserialize)]
+struct RawJsonRpcError {
+    code: i32,
+    message: String,
+    #[serde(default)]
+    data: Option<serde_json::Value>,
+}
+
+/// Extract a human-readable error detail from a wire error.
+/// Prefers `data.details`, falls back to `data` as string, then `message`.
+fn extract_wire_error_detail(error: &RawJsonRpcError) -> String {
+    if let Some(data) = &error.data {
+        if let Some(details) = data.get("details").and_then(|v| v.as_str()) {
+            return details.to_string();
+        }
+        if let Some(s) = data.as_str() {
+            // Take just the first meaningful line, not long traces
+            return s.lines().next().unwrap_or(s).to_string();
+        }
+    }
+    error.message.clone()
+}
+
+/// Clean up sacp error strings that contain embedded JSON.
+/// Format is usually: "Error type: { \"data\": \"...\", \"spawned_at\": \"...\" }"
+fn clean_sacp_error_message(raw: &str) -> String {
+    if let Some(idx) = raw.find(": {") {
+        let prefix = raw[..idx].trim();
+        let json_part = raw[idx + 2..].trim();
+        if let Ok(val) = serde_json::from_str::<serde_json::Value>(json_part) {
+            if let Some(details) = val
+                .get("data")
+                .and_then(|d| d.get("details"))
+                .and_then(|d| d.as_str())
+            {
+                return details.to_string();
+            }
+            if let Some(data_str) = val.get("data").and_then(|d| d.as_str()) {
+                return data_str.lines().next().unwrap_or(data_str).to_string();
+            }
+        }
+        if !prefix.is_empty() {
+            return prefix.to_string();
+        }
+    }
+    raw.to_string()
+}
+
+type CapturedModels = Arc<std::sync::Mutex<Option<RawSessionModels>>>;
+type CapturedError = Arc<std::sync::Mutex<Option<RawJsonRpcError>>>;
+type CapturedCommands = Arc<std::sync::Mutex<Option<Vec<SlashCommandInfo>>>>;
+
+/// Wire-level command data from session/update notifications.
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct RawWireCommand {
+    name: String,
+    description: String,
+    #[serde(default)]
+    input: Option<serde_json::Value>,
+}
+
+/// Custom request type for session/set_model since the sacp crate
+/// doesn't expose it without the unstable_session_model feature flag.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct SetSessionModelRequest {
+    session_id: String,
+    model_id: String,
+}
+
+impl sacp::JrMessage for SetSessionModelRequest {
+    fn method(&self) -> &str {
+        "session/set_model"
+    }
+
+    fn to_untyped_message(&self) -> Result<sacp::UntypedMessage, sacp::Error> {
+        sacp::UntypedMessage::new(self.method(), self)
+    }
+
+    fn parse_message(method: &str, params: &impl Serialize) -> Option<Result<Self, sacp::Error>> {
+        if method != "session/set_model" {
+            return None;
+        }
+        let value = serde_json::to_value(params).ok()?;
+        Some(serde_json::from_value(value).map_err(sacp::Error::into_internal_error))
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct SetSessionModelResponse {}
+
+impl sacp::JrRequest for SetSessionModelRequest {
+    type Response = SetSessionModelResponse;
+}
+
+impl sacp::JrResponsePayload for SetSessionModelResponse {
+    fn into_json(self, _method: &str) -> Result<serde_json::Value, sacp::Error> {
+        serde_json::to_value(self).map_err(sacp::Error::into_internal_error)
+    }
+
+    fn from_value(_method: &str, value: serde_json::Value) -> Result<Self, sacp::Error> {
+        serde_json::from_value(value).map_err(sacp::Error::into_internal_error)
     }
 }
