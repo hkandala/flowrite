@@ -28,9 +28,7 @@ export function PlanBlock({ entries }: PlanBlockProps) {
           className="flex items-start gap-2"
         >
           <span className="pt-0.5">{statusIcon(entry.status)}</span>
-          <span className="text-sm text-foreground/90">
-            {entry.content}
-          </span>
+          <span className="text-sm text-foreground/90">{entry.content}</span>
         </div>
       ))}
     </div>

@@ -23,8 +23,8 @@ importers:
         specifier: ^3.11.0
         version: 3.11.0
       "@pierre/diffs":
-        specifier: ^1.0.10
-        version: 1.0.10(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+        specifier: ^1.0.11
+        version: 1.0.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       "@platejs/autoformat":
         specifier: ^49.0.0
         version: 49.0.0(platejs@49.2.21(@types/react@19.2.14)(immer@10.2.0)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(scheduler@0.27.0)(use-sync-external-store@1.6.0(react@19.2.4)))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -822,10 +822,10 @@ packages:
         integrity: sha512-dfLbk+PwWvFzSxwk3n5ySL0hfBog779o8h68wK/7/APo/7cgyWp5jcXockbxdk5kFRkbeXWm4Fbi9FrdN381sA==,
       }
 
-  "@pierre/diffs@1.0.10":
+  "@pierre/diffs@1.0.11":
     resolution:
       {
-        integrity: sha512-ahkpfS30NfaB+PBxnf0/Mc20ySBRTQmM28a7Ojpd0UZixmTyhGhJfBFjvmhX8dSzR22lB3h3OIMMxpB4yYTIOQ==,
+        integrity: sha512-j6zIEoyImQy1HfcJqbrDwP0O5I7V2VNXAaw53FqQ+SykRfaNwABeZHs9uibXO4supaXPmTx6LEH9Lffr03e1Tw==,
       }
     peerDependencies:
       react: ^18.3.1 || ^19.0.0
@@ -5831,7 +5831,7 @@ snapshots:
 
   "@juggle/resize-observer@3.4.0": {}
 
-  "@pierre/diffs@1.0.10(react-dom@19.2.4(react@19.2.4))(react@19.2.4)":
+  "@pierre/diffs@1.0.11(react-dom@19.2.4(react@19.2.4))(react@19.2.4)":
     dependencies:
       "@shikijs/core": 3.22.0
       "@shikijs/engine-javascript": 3.22.0

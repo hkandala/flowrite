@@ -22,7 +22,7 @@
     "@headless-tree/core": "^1.6.3",
     "@headless-tree/react": "^1.6.3",
     "@internationalized/date": "^3.11.0",
-    "@pierre/diffs": "^1.0.10",
+    "@pierre/diffs": "^1.0.11",
     "@platejs/autoformat": "^49.0.0",
     "@platejs/basic-nodes": "^49.0.0",
     "@platejs/code-block": "^49.0.0",

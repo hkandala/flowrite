@@ -26,13 +26,7 @@ function UserMessageStatic({ editorValue }: { editorValue: any[] }) {
     [],
   );
 
-  return (
-    <EditorStatic
-      editor={editor}
-      value={editorValue}
-      variant="relaxed"
-    />
-  );
+  return <EditorStatic editor={editor} value={editorValue} variant="relaxed" />;
 }
 
 interface ChatMessageProps {
