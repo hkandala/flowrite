@@ -26,8 +26,12 @@ import {
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/store/agent-store";
 import { useWorkspaceStore } from "@/store/workspace-store";
+import { getOpenFiles } from "@/store/workspace-store";
 import { FileReferenceKit } from "@/components/chat/plugins/file-reference-kit";
-import { serializeChatValue } from "@/components/chat/transforms/serialize-chat-value";
+import {
+  serializeChatValue,
+  serializeOpenFiles,
+} from "@/components/chat/transforms/serialize-chat-value";
 
 interface ComboboxItem {
   id: string;
@@ -195,8 +199,12 @@ export function ChatInput() {
 
   const submitPrompt = useCallback(() => {
     if (submitDisabled || isResponding || !session) return;
-    const text = serializeChatValue(chatEditor.children).trim();
-    if (!text) return;
+    const chatText = serializeChatValue(chatEditor.children).trim();
+    if (!chatText) return;
+
+    const openFilesXml = serializeOpenFiles(getOpenFiles());
+    const text = openFilesXml ? `${openFilesXml}\n\n${chatText}` : chatText;
+
     const editorValue = JSON.parse(JSON.stringify(chatEditor.children));
     void sendPromptAction(session.sessionId, text, editorValue);
     chatEditor.tf.reset();

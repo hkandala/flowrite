@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { parseDiffFromFile } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
+import { XIcon } from "lucide-react";
 
 import {
   Dialog,
@@ -22,9 +23,9 @@ type LineDiffType = "word" | "char" | "none";
 type Overflow = "wrap" | "scroll";
 
 export function DiffModal({ diffData, open, onOpenChange }: DiffModalProps) {
-  const [diffStyle, setDiffStyle] = useState<DiffStyle>("unified");
+  const [diffStyle, setDiffStyle] = useState<DiffStyle>("split");
   const [lineDiffType, setLineDiffType] = useState<LineDiffType>("word");
-  const [disableLineNumbers, setDisableLineNumbers] = useState(false);
+  const [disableLineNumbers, setDisableLineNumbers] = useState(true);
   const [overflow, setOverflow] = useState<Overflow>("wrap");
 
   const filename = diffData.path.split("/").pop() || diffData.path;
@@ -46,7 +47,7 @@ export function DiffModal({ diffData, open, onOpenChange }: DiffModalProps) {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         className="sm:max-w-[90vw] h-[85vh] flex flex-col gap-0 p-0"
-        showCloseButton
+        showCloseButton={false}
       >
         <DialogHeader className="px-4 pt-4 pb-3 border-b border-white/10 shrink-0">
           <div className="flex items-center justify-between gap-4">
@@ -78,6 +79,7 @@ export function DiffModal({ diffData, open, onOpenChange }: DiffModalProps) {
                 onClick={() => setDisableLineNumbers((v) => !v)}
                 label="Ln"
               />
+              <div className="w-px h-4 bg-white/10 mx-1" />
               <ToggleGroup
                 value={overflow}
                 onChange={(v) => setOverflow(v as Overflow)}
@@ -86,6 +88,14 @@ export function DiffModal({ diffData, open, onOpenChange }: DiffModalProps) {
                   { value: "scroll", label: "Scroll" },
                 ]}
               />
+              <div className="w-px h-4 bg-white/10 mx-1" />
+              <button
+                type="button"
+                onClick={() => onOpenChange(false)}
+                className="flex items-center justify-center p-0.5 rounded opacity-70 hover:opacity-100 transition-opacity"
+              >
+                <XIcon className="size-4" />
+              </button>
             </div>
           </div>
         </DialogHeader>
@@ -97,6 +107,7 @@ export function DiffModal({ diffData, open, onOpenChange }: DiffModalProps) {
               lineDiffType,
               disableLineNumbers,
               overflow,
+              diffIndicators: "none",
               theme: "pierre-dark",
               disableFileHeader: true,
             }}

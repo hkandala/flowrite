@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight, Maximize2 } from "lucide-react";
+import { ChevronDown, ChevronRight, Maximize2 } from "lucide-react";
 import { parseDiffFromFile } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { invoke } from "@tauri-apps/api/core";
@@ -136,38 +136,55 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
               </div>
             )}
           {diffMetadata && (
-            <div
-              className={cn(
-                "rounded-lg border border-border overflow-auto text-[11px] [--diffs-font-size:11px] [--diffs-line-height:16px]",
-                !diffExpanded && "max-h-[125px]",
-              )}
-              onClick={(e) => {
-                e.stopPropagation();
-                if (!diffExpanded) setDiffExpanded(true);
-              }}
-            >
-              <FileDiff
-                fileDiff={diffMetadata}
-                options={{
-                  diffStyle: "unified",
-                  lineDiffType: "word",
-                  theme: "pierre-dark",
-                  disableLineNumbers: true,
-                  overflow: "wrap",
+            <div className="-ml-2.5 -mr-1.5 rounded-lg border border-border overflow-hidden text-[11px] [--diffs-font-size:11px] [--diffs-line-height:16px] my-4">
+              <div
+                className="flex items-center justify-between px-2.5 py-1.5 bg-muted/30 cursor-pointer select-none border-b border-border"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  setDiffExpanded((v) => !v);
                 }}
-                renderHeaderMetadata={() => (
-                  <button
-                    type="button"
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      setModalOpen(true);
-                    }}
-                    className="flex items-center justify-center p-0.5 rounded hover:bg-white/10 transition-colors"
-                  >
-                    <Maximize2 className="size-3" />
-                  </button>
+              >
+                <div className="flex items-center gap-1.5 text-xs text-muted-foreground min-w-0">
+                  {diffExpanded ? (
+                    <ChevronDown className="size-3 shrink-0" />
+                  ) : (
+                    <ChevronRight className="size-3 shrink-0" />
+                  )}
+                  <span className="truncate font-mono">
+                    {toolCall.diffData?.path.split("/").pop() ||
+                      toolCall.diffData?.path}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    setModalOpen(true);
+                  }}
+                  className="flex items-center justify-center p-0.5 pl-1 rounded hover:bg-white/10 transition-colors shrink-0"
+                >
+                  <Maximize2 className="size-3" />
+                </button>
+              </div>
+              <div
+                className={cn(
+                  "overflow-auto",
+                  !diffExpanded && "max-h-[125px]",
                 )}
-              />
+              >
+                <FileDiff
+                  fileDiff={diffMetadata}
+                  options={{
+                    diffStyle: "unified",
+                    lineDiffType: "word",
+                    diffIndicators: "none",
+                    theme: "pierre-dark",
+                    disableFileHeader: true,
+                    disableLineNumbers: true,
+                    overflow: "wrap",
+                  }}
+                />
+              </div>
             </div>
           )}
           {toolCall.content && !hasDiff && (

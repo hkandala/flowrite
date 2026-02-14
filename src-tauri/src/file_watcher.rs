@@ -33,6 +33,7 @@ pub struct FileWatcherEvent {
 struct FileEventState {
     first_kind: String,
     last_kind: String,
+    has_rename_to: bool,
 }
 
 #[derive(Default)]
@@ -55,6 +56,9 @@ impl EventAccumulator {
             state.first_kind = kind.to_string();
         }
         state.last_kind = kind.to_string();
+        if kind == "rename_to" {
+            state.has_rename_to = true;
+        }
     }
 
     fn add_dir_event(&mut self, dir: String) {
@@ -103,11 +107,16 @@ impl EventAccumulator {
                     directories.insert(parent);
                 }
                 (true, true) => {
-                    // file still exists - content change only (atomic save or modify)
+                    // file still exists - content change (atomic save or modify)
                     file_changes.push(FileChange {
                         path: path.clone(),
                         kind: "modify".to_string(),
                     });
+                    // rename-to means the file may have arrived here via rename,
+                    // so the directory structure may have changed
+                    if state.has_rename_to {
+                        directories.insert(parent);
+                    }
                 }
             }
         }
@@ -212,46 +221,84 @@ fn run_watcher(
 }
 
 fn process_event(base_path: &Path, event: Event, accumulator: &mut EventAccumulator) {
-    use notify::event::ModifyKind;
+    use notify::event::{ModifyKind, RenameMode};
     use notify::EventKind;
 
-    // determine event kind - only track create, modify (content), delete
-    // treat rename as delete (we'll get create for the new name)
-    let kind = match event.kind {
-        EventKind::Create(_) => "create",
-        EventKind::Modify(modify_kind) => match modify_kind {
-            ModifyKind::Name(_) => "delete", // treat rename as delete
-            ModifyKind::Data(_) => "modify",
-            _ => return, // ignore metadata, permissions, etc.
+    match event.kind {
+        EventKind::Create(_) => {
+            for path in &event.paths {
+                process_path(base_path, path, "create", accumulator);
+            }
+        }
+        EventKind::Modify(ModifyKind::Data(_)) => {
+            for path in &event.paths {
+                process_path(base_path, path, "modify", accumulator);
+            }
+        }
+        EventKind::Remove(_) => {
+            for path in &event.paths {
+                process_path(base_path, path, "delete", accumulator);
+            }
+        }
+        EventKind::Modify(ModifyKind::Name(mode)) => match mode {
+            RenameMode::From => {
+                // file left this path
+                for path in &event.paths {
+                    process_path(base_path, path, "delete", accumulator);
+                }
+            }
+            RenameMode::To => {
+                // file arrived at this path
+                for path in &event.paths {
+                    process_path(base_path, path, "rename_to", accumulator);
+                }
+            }
+            RenameMode::Both => {
+                // paths[0] = source (left), paths[1] = target (arrived)
+                if let Some(from) = event.paths.first() {
+                    process_path(base_path, from, "delete", accumulator);
+                }
+                if let Some(to) = event.paths.get(1) {
+                    process_path(base_path, to, "rename_to", accumulator);
+                }
+            }
+            _ => {
+                // RenameMode::Any / Other: infer direction from file existence.
+                // on macOS, FSEvents can't determine rename direction, so we
+                // check whether the file currently exists at the path.
+                for path in &event.paths {
+                    let kind = if path.exists() { "rename_to" } else { "delete" };
+                    process_path(base_path, path, kind, accumulator);
+                }
+            }
         },
-        EventKind::Remove(_) => "delete",
-        _ => return, // ignore access, other events
+        _ => {} // ignore access, metadata, permissions, etc.
+    }
+}
+
+fn process_path(base_path: &Path, path: &Path, kind: &str, accumulator: &mut EventAccumulator) {
+    let relative_path = match path.strip_prefix(base_path) {
+        Ok(p) => p.to_string_lossy().to_string(),
+        Err(_) => return,
     };
 
-    for path in event.paths {
-        let relative_path = match path.strip_prefix(base_path) {
-            Ok(p) => p.to_string_lossy().to_string(),
-            Err(_) => continue,
-        };
+    // skip hidden files and folders (any path component starting with .)
+    if relative_path
+        .split('/')
+        .any(|segment| segment.starts_with('.'))
+    {
+        return;
+    }
 
-        // skip hidden files and folders (any path component starting with .)
-        if relative_path
-            .split('/')
-            .any(|segment| segment.starts_with('.'))
-        {
-            continue;
-        }
-
-        if path.is_dir() {
-            // directory event - add parent to directory_changes
-            let parent = get_parent_dir(&relative_path);
-            accumulator.add_dir_event(parent);
-            log::debug!("directory {kind}: {relative_path}");
-        } else if path.extension().is_some_and(|ext| ext == "md") {
-            // .md file event - track for collation (directory changes determined after)
-            accumulator.add_file_event(relative_path.clone(), kind);
-            log::debug!("file {kind}: {relative_path}");
-        }
+    if path.is_dir() {
+        // directory event - add parent to directory_changes
+        let parent = get_parent_dir(&relative_path);
+        accumulator.add_dir_event(parent);
+        log::debug!("directory {kind}: {relative_path}");
+    } else if path.extension().is_some_and(|ext| ext == "md") {
+        // .md file event - track for collation (directory changes determined after)
+        accumulator.add_file_event(relative_path.clone(), kind);
+        log::debug!("file {kind}: {relative_path}");
     }
 }
 

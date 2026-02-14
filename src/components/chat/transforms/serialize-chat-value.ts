@@ -1,5 +1,6 @@
 import { FILE_REFERENCE_TYPE } from "../plugins/file-reference-plugin";
 import type { TFileReferenceElement } from "../plugins/file-reference-plugin";
+import type { OpenFileInfo } from "@/store/workspace-store";
 
 type FileRefClassification = "no-text" | "inline" | "context-block";
 
@@ -126,4 +127,17 @@ function serializeNode(
   }
 
   return "";
+}
+
+export function serializeOpenFiles(files: OpenFileInfo[]): string {
+  if (files.length === 0) return "";
+
+  const entries = files
+    .map((f) => {
+      const activeAttr = f.isActive ? ' active="true"' : "";
+      return `<file path="${f.filePath}"${activeAttr} />`;
+    })
+    .join("\n");
+
+  return `<open_files>\n${entries}\n</open_files>`;
 }

@@ -90,33 +90,45 @@ function richTextToPlain(value: unknown[]): string {
 
 /**
  * Serialize discussions to frontmatter format using TextQuoteSelector.
- * Prefix/suffix are extracted from the serialized markdown for proper
- * disambiguation and agent readability.
+ * Prefix/suffix are extracted from Slate plain text for clean,
+ * readable YAML without markdown syntax characters.
  */
 function serializeDiscussions(
   editor: ReturnType<typeof createPlateEditor>,
   discussions: TDiscussion[],
-  markdown: string,
 ): SerializedDiscussion[] {
   const activeDiscussions = discussions.filter((d) => !d.isResolved);
   if (activeDiscussions.length === 0) return [];
 
-  // Build posMap: discussionId → document content from Slate marks
+  // Build posMap: discussionId → document content + precise char offset
   const posMap = new Map<
     string,
     {
       docContent: string;
-      firstBlock: number;
       lastSeenBlock: number;
+      charOffset: number;
     }
   >();
 
   const blocks = editor.children;
 
+  // Build full plain text from Slate blocks for selector extraction
+  const blockTexts = blocks.map((block) => NodeApi.string(block as any));
+  const fullText = blockTexts.join("\n");
+
+  // Precompute character offset for the start of each top-level block
+  const blockStartPos: number[] = [];
+  let cumPos = 0;
+  for (let i = 0; i < blockTexts.length; i++) {
+    blockStartPos.push(cumPos);
+    cumPos += blockTexts[i].length + 1; // +1 for "\n" separator
+  }
+
   for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
     const block = blocks[blockIdx];
     const textNodes = Array.from(NodeApi.texts(block as any));
 
+    let inBlockOffset = 0;
     for (const [textNode] of textNodes) {
       const text = (textNode as any).text as string;
       const keys = Object.keys(textNode).filter(
@@ -129,8 +141,8 @@ function serializeDiscussions(
         if (!existing) {
           posMap.set(discussionId, {
             docContent: text,
-            firstBlock: blockIdx,
             lastSeenBlock: blockIdx,
+            charOffset: blockStartPos[blockIdx] + inBlockOffset,
           });
         } else {
           if (existing.lastSeenBlock === blockIdx) {
@@ -141,11 +153,11 @@ function serializeDiscussions(
           }
         }
       }
+      inBlockOffset += text.length;
     }
   }
 
   // Build serialized discussions with selectors
-  // Find exact text in markdown and extract prefix/suffix from there
   const serialized: SerializedDiscussion[] = [];
 
   for (const discussion of activeDiscussions) {
@@ -155,39 +167,68 @@ function serializeDiscussions(
     let selector: SerializedSelector | undefined;
 
     if (exact) {
-      // Use matchQuote for fuzzy matching (handles formatting boundaries like **bold**)
-      const hint = pos
-        ? Math.round(
-            (pos.firstBlock / Math.max(blocks.length, 1)) * markdown.length,
-          )
-        : undefined;
-      const match = matchQuote(markdown, exact, { hint });
+      // Find the nearest exact occurrence in fullText closest to the hint.
+      // We use indexOf (not matchQuote) because we know the text is exact —
+      // it comes from the same Slate tree — and need position to be the
+      // sole tiebreaker for short/duplicate strings like "and" or ".".
+      const hint = pos?.charOffset ?? 0;
+      let bestStart = -1;
+      let bestDist = Infinity;
+      let searchFrom = 0;
+      while (true) {
+        const idx = fullText.indexOf(exact, searchFrom);
+        if (idx === -1) break;
+        const dist = Math.abs(idx - hint);
+        if (dist < bestDist) {
+          bestDist = dist;
+          bestStart = idx;
+        }
+        searchFrom = idx + 1;
+      }
 
-      if (match) {
-        const prefix = markdown.slice(
-          Math.max(0, match.start - 32),
-          match.start,
-        );
-        const suffix = markdown.slice(match.end, match.end + 32);
+      if (bestStart !== -1) {
+        const matchStart = bestStart;
+        const matchEnd = bestStart + exact.length;
+        // Check if exact is unique — skip prefix/suffix if so
+        const firstIdx = fullText.indexOf(exact);
+        const isUnique =
+          firstIdx !== -1 && fullText.indexOf(exact, firstIdx + 1) === -1;
 
         selector = { exact };
-        if (prefix) selector.prefix = prefix;
-        if (suffix) selector.suffix = suffix;
+
+        if (!isUnique) {
+          // Extract prefix: up to 32 chars before, trimmed at paragraph boundary
+          const rawPrefix = fullText.slice(
+            Math.max(0, matchStart - 32),
+            matchStart,
+          );
+          const lastNl = rawPrefix.lastIndexOf("\n");
+          const prefix = lastNl >= 0 ? rawPrefix.slice(lastNl + 1) : rawPrefix;
+
+          // Extract suffix: up to 32 chars after, trimmed at paragraph boundary
+          const rawSuffix = fullText.slice(matchEnd, matchEnd + 32);
+          const firstNl = rawSuffix.indexOf("\n");
+          const suffix = firstNl >= 0 ? rawSuffix.slice(0, firstNl) : rawSuffix;
+
+          if (prefix) selector.prefix = prefix;
+          if (suffix) selector.suffix = suffix;
+        }
       } else {
-        // Fallback: store exact only (no prefix/suffix) if not found in markdown
+        // Fallback: store exact only (no prefix/suffix) if not found in plain text
         selector = { exact };
       }
     }
 
-    serialized.push({
-      selector,
+    const entry: SerializedDiscussion = {
       createdAt: new Date(discussion.createdAt).toISOString(),
       comments: discussion.comments.map((c) => ({
         user: c.userId,
         content: richTextToPlain(c.contentRich),
         createdAt: new Date(c.createdAt).toISOString(),
       })),
-    });
+    };
+    if (selector) entry.selector = selector;
+    serialized.push(entry);
   }
 
   return serialized;
@@ -470,10 +511,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       return;
     }
 
-    // Serialize markdown first, then discussions (needs markdown for prefix/suffix)
+    // Serialize discussions (uses Slate plain text for selectors)
     const discussions = editor.getOption(discussionPlugin, "discussions");
+    const serialized = serializeDiscussions(editor, discussions);
     const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
-    const serialized = serializeDiscussions(editor, discussions, markdown);
 
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
@@ -535,10 +576,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     if (!selectedPath) return;
 
-    // Serialize markdown first, then discussions (needs markdown for prefix/suffix)
+    // Serialize discussions (uses Slate plain text for selectors)
     const discussions = editor.getOption(discussionPlugin, "discussions");
+    const serialized = serializeDiscussions(editor, discussions);
     const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
-    const serialized = serializeDiscussions(editor, discussions, markdown);
     const isExtPath = !(await isInternalPath(selectedPath));
 
     if (serialized.length > 0) {
@@ -620,13 +661,11 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     useRef<ReturnType<typeof setTimeout>>(undefined);
 
   const doMetadataPersist = useCallback(async () => {
-    if (!editor || !filePath || isExternal || !initialLoadCompleteRef.current)
-      return;
+    if (!editor || !filePath || !initialLoadCompleteRef.current) return;
 
     // Serialize discussions into metadataRef
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
-    const serialized = serializeDiscussions(editor, discussions, markdown);
+    const serialized = serializeDiscussions(editor, discussions);
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
     } else {
@@ -642,7 +681,23 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     if (!yaml.trim()) return;
 
     try {
-      await invoke("write_file_metadata", { path: filePath, yaml });
+      if (isExternal) {
+        // External files: read current content, replace/add frontmatter, write back
+        const rawContent = await invoke<string>("read_external_file", {
+          path: filePath,
+        });
+        const parsed = matter(rawContent);
+        const updatedContent = matter.stringify(parsed.content, {
+          ...parsed.data,
+          ...metadataRef.current,
+        });
+        await invoke("update_external_file", {
+          path: filePath,
+          content: updatedContent,
+        });
+      } else {
+        await invoke("write_file_metadata", { path: filePath, yaml });
+      }
       lastSaveTimestampRef.current = Date.now();
     } catch (err) {
       console.error("failed to auto-save metadata:", err);
@@ -841,9 +896,13 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
         fileChanges: { path: string; kind: string }[];
         directoryChanges: string[];
       }>(FILE_WATCHER_EVENT, async (event) => {
-        // Only process modify events for the current file
+        // Check if current file appears in any file change event.
+        // We match any kind (not just "modify") because atomic saves
+        // on macOS can produce "delete" events when the rename source
+        // is a hidden temp file that gets filtered by the watcher.
+        // We verify the file still exists by attempting to read it.
         const match = event.payload.fileChanges.find(
-          (change) => change.path === filePath && change.kind === "modify",
+          (change) => change.path === filePath,
         );
         if (!match) return;
 
@@ -906,7 +965,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             .getApi(MarkdownPlugin)
             .markdown.serialize();
           const newMarkdown = parsed.content;
-          if (currentMarkdown === newMarkdown && !discussionsChanged) return;
+          if (currentMarkdown === newMarkdown && !discussionsChanged) {
+            return;
+          }
 
           // Replace editor content in-place (preserves undo history)
           editor.tf.replaceNodes(newNodes, { at: [], children: true });

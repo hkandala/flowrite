@@ -603,6 +603,32 @@ export function persistActiveEditorMetadata() {
   callbacks?.persistMetadata();
 }
 
+/** Info about an open file tab in the editor. */
+export interface OpenFileInfo {
+  filePath: string;
+  isActive: boolean;
+}
+
+/** Returns the list of all open file tabs with their paths and active state. */
+export function getOpenFiles(): OpenFileInfo[] {
+  const { dockviewApi } = useWorkspaceStore.getState();
+  if (!dockviewApi) return [];
+
+  const activeId = dockviewApi.activePanel?.id;
+  const files: OpenFileInfo[] = [];
+
+  for (const panel of dockviewApi.panels) {
+    const filePath = (panel.params as Record<string, unknown>)?.filePath as
+      | string
+      | undefined;
+    if (filePath) {
+      files.push({ filePath, isActive: panel.id === activeId });
+    }
+  }
+
+  return files;
+}
+
 function nextUntitledNumber(dockviewApi: DockviewApi): number {
   const usedNumbers = new Set<number>();
   for (const panel of dockviewApi.panels) {
