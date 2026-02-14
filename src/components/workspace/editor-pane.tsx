@@ -46,6 +46,7 @@ import { CommentKit } from "../editor/plugins/comment-kit";
 import {
   DiscussionKit,
   discussionPlugin,
+  generateDiscussionId,
   type TDiscussion,
 } from "../editor/plugins/discussion-kit";
 import type { TComment } from "@/components/ui/comment";
@@ -62,15 +63,22 @@ function lastElement<T>(arr: T[]): T | undefined {
 
 // --- comment serialization/deserialization ---
 
+import { matchQuote, type TextQuoteSelector } from "@/lib/match-quote";
+
 interface SerializedComment {
   user: string;
   content: string;
   createdAt: string;
 }
 
+interface SerializedSelector {
+  exact: string;
+  prefix?: string;
+  suffix?: string;
+}
+
 interface SerializedDiscussion {
-  id: string;
-  documentContent: string;
+  selector?: SerializedSelector;
   createdAt: string;
   comments: SerializedComment[];
 }
@@ -80,21 +88,78 @@ function richTextToPlain(value: unknown[]): string {
   return value.map((node) => NodeApi.string(node as any)).join("\n");
 }
 
+/** Extract plain text from each block in the Slate tree. */
+function getBlockTexts(blocks: any[]): string[] {
+  return blocks.map((block) =>
+    block.children
+      ? block.children
+          .filter((c: any) => c.text !== undefined)
+          .map((c: any) => c.text)
+          .join("")
+      : "",
+  );
+}
+
 /**
- * Serialize discussions using inline HTML comment markers.
- * Returns YAML-ready data AND a cloned Slate tree with placeholders injected.
- * Placeholders are alphanumeric so the markdown serializer won't escape them.
- * Call `replaceMarkerPlaceholders()` on the serialized markdown to convert
- * placeholders to real `<!--id-->` / `<!--/id-->` markers.
+ * Extract ~charCount characters of text preceding a position.
+ * Walks backward through blocks to collect enough context.
  */
-function serializeDiscussionsWithMarkers(
+function extractPrefix(
+  blockTexts: string[],
+  blockIdx: number,
+  offset: number,
+  charCount: number,
+): string {
+  let result = blockTexts[blockIdx].slice(0, offset);
+
+  let b = blockIdx - 1;
+  while (result.length < charCount && b >= 0) {
+    result = blockTexts[b] + "\n" + result;
+    b--;
+  }
+
+  if (result.length > charCount) {
+    result = result.slice(result.length - charCount);
+  }
+
+  return result;
+}
+
+/**
+ * Extract ~charCount characters of text following a position.
+ * Walks forward through blocks to collect enough context.
+ */
+function extractSuffix(
+  blockTexts: string[],
+  blockIdx: number,
+  offset: number,
+  charCount: number,
+): string {
+  let result = blockTexts[blockIdx].slice(offset);
+
+  let b = blockIdx + 1;
+  while (result.length < charCount && b < blockTexts.length) {
+    result = result + "\n" + blockTexts[b];
+    b++;
+  }
+
+  if (result.length > charCount) {
+    result = result.slice(0, charCount);
+  }
+
+  return result;
+}
+
+/**
+ * Serialize discussions to frontmatter format using TextQuoteSelector.
+ * No marker injection into the Slate tree — only builds frontmatter data.
+ */
+function serializeDiscussions(
   editor: ReturnType<typeof createPlateEditor>,
   discussions: TDiscussion[],
-): { serialized: SerializedDiscussion[]; markedValue: any[] } {
+): SerializedDiscussion[] {
   const activeDiscussions = discussions.filter((d) => !d.isResolved);
-  if (activeDiscussions.length === 0) {
-    return { serialized: [], markedValue: structuredClone(editor.children) };
-  }
+  if (activeDiscussions.length === 0) return [];
 
   // Build posMap: discussionId → position range + document content
   const posMap = new Map<
@@ -150,110 +215,34 @@ function serializeDiscussionsWithMarkers(
     }
   }
 
-  // Clone the Slate tree for marker injection
-  const markedValue = structuredClone(editor.children) as any[];
+  // Extract plain text per block for prefix/suffix computation
+  const blockTexts = getBlockTexts(blocks as any[]);
 
-  // Collect injection points
-  const injections: {
-    blockIdx: number;
-    charOffset: number;
-    type: "open" | "close";
-    id: string;
-  }[] = [];
-
-  for (const [id, pos] of posMap) {
-    injections.push({
-      blockIdx: pos.startBlock,
-      charOffset: pos.startOffset,
-      type: "open",
-      id,
-    });
-    injections.push({
-      blockIdx: pos.endBlock,
-      charOffset: pos.endOffset,
-      type: "close",
-      id,
-    });
-  }
-
-  // Sort descending so we inject from end to start (preserves earlier offsets)
-  injections.sort((a, b) => {
-    if (a.blockIdx !== b.blockIdx) return b.blockIdx - a.blockIdx;
-    if (a.charOffset !== b.charOffset) return b.charOffset - a.charOffset;
-    // Close markers before open markers at same position (for interleaving)
-    return a.type === "close" ? -1 : 1;
-  });
-
-  // Inject placeholders into cloned tree (alphanumeric to avoid escaping)
-  for (const inj of injections) {
-    const marker =
-      inj.type === "open" ? `CMTO${inj.id}CMTE` : `CMTC${inj.id}CMTE`;
-    const block = markedValue[inj.blockIdx];
-    if (!block?.children) continue;
-
-    // Find the text node at the target offset and split it
-    let pos = 0;
-    const newChildren: any[] = [];
-    let injected = false;
-
-    for (const child of block.children) {
-      if (child.text === undefined || injected) {
-        newChildren.push(child);
-        continue;
-      }
-
-      const text: string = child.text;
-      const nodeStart = pos;
-      const nodeEnd = pos + text.length;
-
-      if (inj.charOffset >= nodeStart && inj.charOffset <= nodeEnd) {
-        const splitAt = inj.charOffset - nodeStart;
-        // Strip comment marks from the parts
-        const cleanProps = { ...child };
-        for (const k of Object.keys(cleanProps)) {
-          if (k.startsWith("comment_") || k === "comment") {
-            delete cleanProps[k];
-          }
-        }
-
-        if (splitAt > 0) {
-          newChildren.push({ ...cleanProps, text: text.slice(0, splitAt) });
-        }
-        newChildren.push({ text: marker });
-        if (splitAt < text.length) {
-          newChildren.push({ ...cleanProps, text: text.slice(splitAt) });
-        }
-        injected = true;
-      } else {
-        // Strip comment marks from non-injection nodes too
-        const cleanProps = { ...child };
-        for (const k of Object.keys(cleanProps)) {
-          if (k.startsWith("comment_") || k === "comment") {
-            delete cleanProps[k];
-          }
-        }
-        newChildren.push(cleanProps);
-      }
-
-      pos = nodeEnd;
-    }
-
-    // If offset is past all text nodes (e.g. end of block), append marker
-    if (!injected) {
-      newChildren.push({ text: marker });
-    }
-
-    block.children = newChildren;
-  }
-
-  // Build serialized discussions
+  // Build serialized discussions with selectors
   const serialized: SerializedDiscussion[] = [];
 
   for (const discussion of activeDiscussions) {
     const pos = posMap.get(discussion.id);
+    const exact = pos?.docContent ?? discussion.documentContent ?? "";
+
+    let selector: SerializedSelector | undefined;
+
+    if (exact && pos) {
+      const prefix = extractPrefix(
+        blockTexts,
+        pos.startBlock,
+        pos.startOffset,
+        32,
+      );
+      const suffix = extractSuffix(blockTexts, pos.endBlock, pos.endOffset, 32);
+
+      selector = { exact };
+      if (prefix) selector.prefix = prefix;
+      if (suffix) selector.suffix = suffix;
+    }
+
     serialized.push({
-      id: discussion.id,
-      documentContent: pos?.docContent ?? discussion.documentContent ?? "",
+      selector,
       createdAt: new Date(discussion.createdAt).toISOString(),
       comments: discussion.comments.map((c) => ({
         user: c.userId,
@@ -263,87 +252,28 @@ function serializeDiscussionsWithMarkers(
     });
   }
 
-  return { serialized, markedValue };
-}
-
-/** Replace alphanumeric placeholders with real HTML comment markers. */
-function replaceMarkerPlaceholders(markdown: string): string {
-  return markdown
-    .replace(/CMTO([\w-]+?)CMTE/g, "<!--$1-->")
-    .replace(/CMTC([\w-]+?)CMTE/g, "<!--/$1-->");
+  return serialized;
 }
 
 /**
- * Extract inline HTML comment markers from markdown and return clean markdown.
- */
-function extractAndStripMarkers(markdown: string): {
-  cleanMarkdown: string;
-  markers: Array<{ id: string; textContent: string }>;
-} {
-  const markerPattern = /<!--([\w-]+)-->/g;
-  const openPositions = new Map<string, number>();
-  const markers: Array<{ id: string; textContent: string }> = [];
-
-  // First pass: find all open/close marker positions in original text
-  const allMarkers: Array<{
-    start: number;
-    end: number;
-    id: string;
-    type: "open" | "close";
-  }> = [];
-
-  let match;
-  while ((match = markerPattern.exec(markdown)) !== null) {
-    const raw = match[1];
-    if (raw.startsWith("/")) {
-      allMarkers.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        id: raw.slice(1),
-        type: "close",
-      });
-    } else {
-      allMarkers.push({
-        start: match.index,
-        end: match.index + match[0].length,
-        id: raw,
-        type: "open",
-      });
-    }
-  }
-
-  // Pair open/close markers and extract text between them
-  for (const m of allMarkers) {
-    if (m.type === "open") {
-      openPositions.set(m.id, m.end);
-    } else if (m.type === "close" && openPositions.has(m.id)) {
-      const textStart = openPositions.get(m.id)!;
-      let textContent = markdown.slice(textStart, m.start);
-      // Strip any nested markers from the extracted text
-      textContent = textContent.replace(/<!--\/?[\w-]+-->/g, "");
-      markers.push({ id: m.id, textContent });
-      openPositions.delete(m.id);
-    }
-  }
-
-  // Remove all markers from markdown
-  const cleanMarkdown = markdown.replace(/<!--\/?[\w-]+-->/g, "");
-
-  return { cleanMarkdown, markers };
-}
-
-/**
- * Deserialize frontmatter discussions using stable IDs (new marker format).
+ * Deserialize frontmatter discussions.
+ * Generates runtime IDs (not persisted) and builds a selector map for anchoring.
  */
 function deserializeDiscussions(serialized: SerializedDiscussion[]): {
   discussions: TDiscussion[];
   users: Record<string, { id: string; name: string }>;
+  selectorMap: Map<string, TextQuoteSelector>;
 } {
   const users: Record<string, { id: string; name: string }> = {};
   const discussions: TDiscussion[] = [];
+  const selectorMap = new Map<string, TextQuoteSelector>();
 
   for (const sd of serialized) {
-    const discussionId = sd.id;
+    const discussionId = generateDiscussionId();
+
+    if (sd.selector) {
+      selectorMap.set(discussionId, sd.selector);
+    }
 
     const comments: TComment[] = sd.comments.map((sc) => {
       if (!users[sc.user]) {
@@ -374,125 +304,79 @@ function deserializeDiscussions(serialized: SerializedDiscussion[]): {
       createdAt: new Date(sd.createdAt),
       isResolved: false,
       userId: sd.comments[0]?.user ?? "me",
-      documentContent: sd.documentContent,
+      documentContent: sd.selector?.exact,
     });
   }
 
-  return { discussions, users };
+  return { discussions, users, selectorMap };
 }
 
 /**
- * Find a text string within the Slate value, returning block/offset positions.
- * Handles both single-block and multi-block text spans.
- * usedRanges prevents the same range from being matched twice.
+ * Convert a global character offset in flattened document text
+ * to a { blockIndex, offset } position within the Slate block array.
  */
-function findTextInSlateValue(
+function globalOffsetToBlockPosition(
+  blockTexts: string[],
+  globalOffset: number,
+): { blockIndex: number; offset: number } {
+  let consumed = 0;
+  for (let i = 0; i < blockTexts.length; i++) {
+    const blockLen = blockTexts[i].length;
+    if (globalOffset <= consumed + blockLen) {
+      return { blockIndex: i, offset: globalOffset - consumed };
+    }
+    consumed += blockLen + 1; // +1 for the \n separator
+  }
+  const lastIdx = blockTexts.length - 1;
+  return { blockIndex: lastIdx, offset: blockTexts[lastIdx].length };
+}
+
+/**
+ * Find a text range in the Slate value using TextQuoteSelector and matchQuote.
+ */
+function findTextWithSelector(
   value: any[],
-  searchText: string,
-  usedRanges: Set<string>,
+  selector: TextQuoteSelector,
 ): {
   startBlock: number;
   startOffset: number;
   endBlock: number;
   endOffset: number;
 } | null {
-  // Extract plain text per block
-  const blockTexts: string[] = value.map((block) =>
-    block.children
-      ? block.children
-          .filter((c: any) => c.text !== undefined)
-          .map((c: any) => c.text)
-          .join("")
-      : "",
-  );
+  const blockTexts = getBlockTexts(value);
+  const fullText = blockTexts.join("\n");
 
-  // Check if searchText contains newlines (multi-block)
-  const searchLines = searchText.split("\n");
+  const match = matchQuote(fullText, selector.exact, {
+    prefix: selector.prefix,
+    suffix: selector.suffix,
+  });
 
-  if (searchLines.length === 1) {
-    // Single-block search
-    for (let b = 0; b < blockTexts.length; b++) {
-      let startFrom = 0;
-      while (true) {
-        const idx = blockTexts[b].indexOf(searchText, startFrom);
-        if (idx === -1) break;
-        const rangeKey = `${b}:${idx}:${b}:${idx + searchText.length}`;
-        if (!usedRanges.has(rangeKey)) {
-          usedRanges.add(rangeKey);
-          return {
-            startBlock: b,
-            startOffset: idx,
-            endBlock: b,
-            endOffset: idx + searchText.length,
-          };
-        }
-        startFrom = idx + 1;
-      }
-    }
-  } else {
-    // Multi-block search: first line must match suffix of a block,
-    // last line must match prefix of a block, middle lines match exactly
-    for (let b = 0; b <= blockTexts.length - searchLines.length; b++) {
-      const firstLine = searchLines[0];
-      const lastLine = searchLines[searchLines.length - 1];
+  if (!match) return null;
 
-      // Check if first line matches at end of block b
-      if (!blockTexts[b].endsWith(firstLine)) continue;
+  const startPos = globalOffsetToBlockPosition(blockTexts, match.start);
+  const endPos = globalOffsetToBlockPosition(blockTexts, match.end);
 
-      // Check middle lines match exactly
-      let middleMatch = true;
-      for (let m = 1; m < searchLines.length - 1; m++) {
-        if (blockTexts[b + m] !== searchLines[m]) {
-          middleMatch = false;
-          break;
-        }
-      }
-      if (!middleMatch) continue;
-
-      // Check if last line matches at start of the last block
-      const lastBlockIdx = b + searchLines.length - 1;
-      if (!blockTexts[lastBlockIdx].startsWith(lastLine)) continue;
-
-      const startOffset = blockTexts[b].length - firstLine.length;
-      const endOffset = lastLine.length;
-      const rangeKey = `${b}:${startOffset}:${lastBlockIdx}:${endOffset}`;
-
-      if (!usedRanges.has(rangeKey)) {
-        usedRanges.add(rangeKey);
-        return {
-          startBlock: b,
-          startOffset,
-          endBlock: lastBlockIdx,
-          endOffset,
-        };
-      }
-    }
-  }
-
-  return null;
+  return {
+    startBlock: startPos.blockIndex,
+    startOffset: startPos.offset,
+    endBlock: endPos.blockIndex,
+    endOffset: endPos.offset,
+  };
 }
 
 /**
- * Apply comment marks by text-matching marker content against the Slate tree.
+ * Apply comment marks to the Slate tree by matching selectors.
  */
-function applyCommentMarksByTextMatch(
+function applyCommentMarksBySelector(
   value: any[],
   discussions: TDiscussion[],
-  markers: Array<{ id: string; textContent: string }>,
+  selectorMap: Map<string, TextQuoteSelector>,
 ) {
-  const markerMap = new Map<string, string>();
-  for (const m of markers) {
-    markerMap.set(m.id, m.textContent);
-  }
-
-  const usedRanges = new Set<string>();
-
   for (const discussion of discussions) {
-    const textContent =
-      markerMap.get(discussion.id) ?? discussion.documentContent;
-    if (!textContent) continue;
+    const selector = selectorMap.get(discussion.id);
+    if (!selector) continue;
 
-    const range = findTextInSlateValue(value, textContent, usedRanges);
+    const range = findTextWithSelector(value, selector);
     if (!range) continue;
 
     const commentKey = getCommentKey(discussion.id);
@@ -633,7 +517,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
   // dirty tracking refs
   const savedUndoRef = useRef<unknown>(null);
-  const commentDirtyRef = useRef(false);
   const initialLoadCompleteRef = useRef(false);
 
   const editorMaximized = useWorkspaceStore((s) => s.editorMaximized);
@@ -663,15 +546,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       return;
     }
 
-    // Serialize discussions with inline markers
+    // Serialize discussions to frontmatter
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const { serialized, markedValue } = serializeDiscussionsWithMarkers(
-      editor,
-      discussions,
-    );
-    const markdown = replaceMarkerPlaceholders(
-      editor.getApi(MarkdownPlugin).markdown.serialize({ value: markedValue }),
-    );
+    const serialized = serializeDiscussions(editor, discussions);
+    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
 
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
@@ -700,7 +578,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     // update dirty tracking
     savedUndoRef.current = lastElement(editor.history.undos) ?? null;
-    commentDirtyRef.current = false;
     markClean(props.api.id);
   }, [
     editor,
@@ -732,15 +609,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     if (!selectedPath) return;
 
-    // Serialize discussions with inline markers
+    // Serialize discussions to frontmatter
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const { serialized, markedValue } = serializeDiscussionsWithMarkers(
-      editor,
-      discussions,
-    );
-    const markdown = replaceMarkerPlaceholders(
-      editor.getApi(MarkdownPlugin).markdown.serialize({ value: markedValue }),
-    );
+    const serialized = serializeDiscussions(editor, discussions);
+    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
     const isExtPath = !(await isInternalPath(selectedPath));
 
     if (serialized.length > 0) {
@@ -801,7 +673,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     // update dirty tracking
     savedUndoRef.current = lastElement(editor.history.undos) ?? null;
-    commentDirtyRef.current = false;
     markClean(props.api.id);
   }, [editor, props.api, props.params.title, markClean]);
 
@@ -826,9 +697,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     if (!editor || !filePath || isExternal || !initialLoadCompleteRef.current)
       return;
 
-    // Serialize discussions into metadataRef (metadata-only, no body markers)
+    // Serialize discussions into metadataRef
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const { serialized } = serializeDiscussionsWithMarkers(editor, discussions);
+    const serialized = serializeDiscussions(editor, discussions);
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
     } else {
@@ -875,11 +746,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     toggleEditorMaximized();
   }, [editorMaximized, props.api, toggleEditorMaximized]);
 
-  const markContentDirty = useCallback(() => {
-    commentDirtyRef.current = true;
-    markDirty(props.api.id);
-  }, [props.api.id, markDirty]);
-
   useEffect(() => {
     registerEditor(props.api.id, {
       save: performSave,
@@ -888,7 +754,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       toggleMaximize,
       toggleFullWidth,
       persistMetadata: triggerPersistMetadata,
-      markContentDirty,
     });
     return () => unregisterEditor(props.api.id);
   }, [
@@ -899,7 +764,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     toggleMaximize,
     toggleFullWidth,
     triggerPersistMetadata,
-    markContentDirty,
   ]);
 
   // load file content and create editor
@@ -940,18 +804,14 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             | {
                 discussions: TDiscussion[];
                 users: Record<string, { id: string; name: string }>;
+                selectorMap: Map<string, TextQuoteSelector>;
               }
             | undefined;
-          let markers: Array<{ id: string; textContent: string }> | undefined;
-          let contentToDeserialize = parsed.content;
 
           if (
             parsed.data.discussions &&
             Array.isArray(parsed.data.discussions)
           ) {
-            const extracted = extractAndStripMarkers(parsed.content);
-            contentToDeserialize = extracted.cleanMarkdown;
-            markers = extracted.markers;
             discussionState = deserializeDiscussions(parsed.data.discussions);
           }
 
@@ -960,14 +820,14 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             value: (editor) => {
               const nodes = editor
                 .getApi(MarkdownPlugin)
-                .markdown.deserialize(contentToDeserialize);
+                .markdown.deserialize(parsed.content);
 
               // Apply comment marks directly into the value before editor mounts
-              if (discussionState && markers) {
-                applyCommentMarksByTextMatch(
+              if (discussionState) {
+                applyCommentMarksBySelector(
                   nodes,
                   discussionState.discussions,
-                  markers,
+                  discussionState.selectorMap,
                 );
               }
 
@@ -1112,7 +972,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     if (!initialLoadCompleteRef.current || !editor) return;
 
     const currentTop = lastElement(editor.history.undos) ?? null;
-    if (currentTop !== savedUndoRef.current || commentDirtyRef.current) {
+    if (currentTop !== savedUndoRef.current) {
       markDirty(props.api.id);
     } else {
       markClean(props.api.id);

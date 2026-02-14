@@ -133,6 +133,9 @@ importers:
       "@udecode/cn":
         specifier: ^52.0.11
         version: 52.0.11(@types/react@19.2.14)(class-variance-authority@0.7.1)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(tailwind-merge@3.4.0)
+      approx-string-match:
+        specifier: ^2.0.0
+        version: 2.0.0
       buffer:
         specifier: ^6.0.3
         version: 6.0.3
@@ -3608,6 +3611,12 @@ packages:
       }
     engines: { node: ">=0.4.0" }
     hasBin: true
+
+  approx-string-match@2.0.0:
+    resolution:
+      {
+        integrity: sha512-03v8MsWnZYV4Svv82EYWoVw1RIKAJ/zubmhG1FYvhJwOsBnLPxx6CPHF2dXN/yW8uwHK+653j52IwiNluJR97w==,
+      }
 
   argparse@1.0.10:
     resolution:
@@ -8232,6 +8241,8 @@ snapshots:
       acorn: 8.15.0
 
   acorn@8.15.0: {}
+
+  approx-string-match@2.0.0: {}
 
   argparse@1.0.10:
     dependencies:

@@ -9,7 +9,6 @@ import { Plate, useEditorRef, usePluginOption } from "platejs/react";
 import {
   useWorkspaceStore,
   persistActiveEditorMetadata,
-  markActiveEditorDirty,
 } from "@/store/workspace-store";
 import {
   type TDiscussion,
@@ -223,7 +222,6 @@ function CommentsList() {
                 placeholder="add a comment..."
                 onCancel={cancelDraft}
                 onDiscussionChange={persistActiveEditorMetadata}
-                onContentDirty={markActiveEditorDirty}
                 onSubmitted={(id) => {
                   if (id) setActiveCommentId(id);
                 }}
@@ -281,7 +279,6 @@ function DiscussionCard({
               index={index}
               setEditingId={setEditingId}
               onDiscussionChange={persistActiveEditorMetadata}
-              onContentDirty={markActiveEditorDirty}
             />
           </React.Fragment>
         ))}

@@ -51,16 +51,8 @@ export function Comment(props: {
   setEditingId: React.Dispatch<React.SetStateAction<string | null>>;
   documentContent?: string;
   onDiscussionChange?: () => void;
-  onContentDirty?: () => void;
 }) {
-  const {
-    comment,
-    editingId,
-    index,
-    setEditingId,
-    onDiscussionChange,
-    onContentDirty,
-  } = props;
+  const { comment, editingId, index, setEditingId, onDiscussionChange } = props;
 
   const editor = useEditorRef();
   const userInfo = usePluginOption(discussionPlugin, "user", comment.userId);
@@ -72,7 +64,6 @@ export function Comment(props: {
       .map((d) => (d.id === id ? { ...d, isResolved: true } : d));
     editor.setOption(discussionPlugin, "discussions", updatedDiscussions);
     onDiscussionChange?.();
-    onContentDirty?.();
   };
 
   const updateComment = (input: {
@@ -287,7 +278,6 @@ export function CommentCreateForm({
   onSubmitted,
   onCancel,
   onDiscussionChange,
-  onContentDirty,
 }: {
   autoFocus?: boolean;
   className?: string;
@@ -297,7 +287,6 @@ export function CommentCreateForm({
   onSubmitted?: (discussionId?: string) => void;
   onCancel?: () => void;
   onDiscussionChange?: () => void;
-  onContentDirty?: () => void;
 }) {
   const discussions = usePluginOption(discussionPlugin, "discussions");
   const editor = useEditorRef();
@@ -453,7 +442,6 @@ export function CommentCreateForm({
       newDiscussion,
     ]);
     onDiscussionChange?.();
-    onContentDirty?.();
 
     const id = newDiscussion.id;
     HistoryApi.withoutSaving(editor, () => {

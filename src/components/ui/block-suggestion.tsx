@@ -29,10 +29,7 @@ import {
   discussionPlugin,
 } from "@/components/editor/plugins/discussion-kit";
 import { suggestionPlugin } from "@/components/editor/plugins/suggestion-kit";
-import {
-  persistActiveEditorMetadata,
-  markActiveEditorDirty,
-} from "@/store/workspace-store";
+import { persistActiveEditorMetadata } from "@/store/workspace-store";
 
 import {
   type TComment,
@@ -217,7 +214,6 @@ export function BlockSuggestionCard({
             index={index}
             setEditingId={setEditingId}
             onDiscussionChange={persistActiveEditorMetadata}
-            onContentDirty={markActiveEditorDirty}
           />
         ))}
 
