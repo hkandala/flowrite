@@ -6,6 +6,7 @@ import { create } from "zustand";
 
 import { SETTINGS_STORE_PATH } from "@/lib/constants";
 import { getBaseDir } from "@/lib/utils";
+import { useDiffStore } from "@/store/diff-store";
 
 const AGENT_CONFIGS_KEY = "agent-configs";
 const REGISTRY_LOADED_KEY = "registry-loaded";
@@ -255,7 +256,16 @@ type AgentEvent =
       data: { commands: SlashCommand[] };
     }
   | { event: "done"; data: { stopReason: string } }
-  | { event: "error"; data: { message: string } };
+  | { event: "error"; data: { message: string } }
+  | {
+      event: "fileDiff";
+      data: {
+        sessionId: string;
+        path: string;
+        oldText: string | null;
+        newText: string;
+      };
+    };
 
 interface RegistryResponse {
   agents: RegistryAgent[];
@@ -1098,6 +1108,14 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                     : event.data.message,
                 }),
             );
+            break;
+          case "fileDiff":
+            useDiffStore.getState().addDiff({
+              sessionId: event.data.sessionId,
+              path: event.data.path,
+              oldText: event.data.oldText,
+              newText: event.data.newText,
+            });
             break;
         }
 

@@ -172,7 +172,7 @@ export function Comment(props: {
       onMouseLeave={() => setHovering(false)}
     >
       <div className="relative flex items-center gap-1.5">
-        <span className="font-medium text-foreground/60">
+        <span className="text-[10px] uppercase tracking-wide font-bold text-muted-foreground">
           {userInfo?.name?.toLowerCase()}
         </span>
         <Tooltip>
@@ -495,7 +495,7 @@ export function CommentCreateForm({
     <div className={cn("w-full", className)}>
       {showControls && isReply && (
         <div className="flex items-center gap-1.5 mt-0.5 mb-1">
-          <span className="font-medium text-foreground/60">
+          <span className="text-[10px] uppercase tracking-wide font-bold text-muted-foreground">
             {currentUserInfo?.name?.toLowerCase()}
           </span>
         </div>

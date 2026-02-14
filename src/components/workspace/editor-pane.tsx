@@ -49,6 +49,8 @@ import {
   type TDiscussion,
 } from "../editor/plugins/discussion-kit";
 import type { TComment } from "@/components/ui/comment";
+import { useDiffStore } from "@/store/diff-store";
+import { DiffOverlay } from "@/components/workspace/diff-overlay";
 
 const BUTTON_TIMEOUT = 1500;
 const SCROLL_DEBOUNCE = 300;
@@ -621,6 +623,8 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
   const [isFullWidth, setIsFullWidth] = useState(false);
   const [showButtons, setShowButtons] = useState(false);
+  const [showDiffOverlay, setShowDiffOverlay] = useState(false);
+  const [absoluteFilePath, setAbsoluteFilePath] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const btnTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -1026,6 +1030,43 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     };
   }, [filePath, isExternal]);
 
+  // --- resolve absolute file path for diff store lookups ---
+  useEffect(() => {
+    if (!filePath) {
+      setAbsoluteFilePath(null);
+      return;
+    }
+    if (isExternal) {
+      setAbsoluteFilePath(filePath);
+    } else {
+      getBaseDir().then((baseDir) => {
+        setAbsoluteFilePath(`${baseDir}/${filePath}`);
+      });
+    }
+  }, [filePath, isExternal]);
+
+  // --- subscribe to diff store for pending diffs on this file ---
+  useEffect(() => {
+    if (!absoluteFilePath || !filePath?.endsWith(".md")) return;
+
+    const unsubscribe = useDiffStore.subscribe(() => {
+      const diff = useDiffStore
+        .getState()
+        .getActiveDiffForFile(absoluteFilePath);
+      if (diff && !showDiffOverlay) {
+        setShowDiffOverlay(true);
+      }
+    });
+
+    // Check on mount too
+    const diff = useDiffStore.getState().getActiveDiffForFile(absoluteFilePath);
+    if (diff) {
+      setShowDiffOverlay(true);
+    }
+
+    return unsubscribe;
+  }, [absoluteFilePath, filePath]);
+
   // --- cleanup metadata persist timer on unmount ---
   useEffect(() => {
     return () => {
@@ -1157,6 +1198,31 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       <div className="flex h-full w-full items-center justify-center">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/50" />
       </div>
+    );
+  }
+
+  // diff overlay
+  const activeDiff =
+    absoluteFilePath && showDiffOverlay
+      ? useDiffStore.getState().getActiveDiffForFile(absoluteFilePath)
+      : null;
+
+  if (activeDiff && showDiffOverlay) {
+    return (
+      <DiffOverlay
+        oldText={activeDiff.oldText}
+        newText={activeDiff.newText}
+        filePath={activeDiff.path}
+        sessionId={activeDiff.sessionId}
+        onDismiss={() => {
+          setShowDiffOverlay(false);
+          // Reload the file content after diff resolution
+          if (filePath) {
+            setIsLoading(true);
+            setEditor(null);
+          }
+        }}
+      />
     );
   }
 

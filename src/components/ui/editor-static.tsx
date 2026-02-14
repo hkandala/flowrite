@@ -25,7 +25,7 @@ export const editorVariants = cva(
         true: "ring-2 ring-ring ring-offset-2",
       },
       variant: {
-        ai: "w-full px-0 text-base md:text-sm leading-relaxed",
+        ai: "w-full px-0 text-base md:text-sm",
         aiChat:
           "max-h-[min(70vh,320px)] w-full max-w-[700px] overflow-y-auto px-5 py-3 text-base md:text-sm",
         default:
@@ -33,6 +33,7 @@ export const editorVariants = cva(
         demo: "size-full px-16 pt-4 pb-72 text-base sm:px-[max(64px,calc(50%-350px))]",
         fullWidth: "size-full px-16 pt-4 pb-72 text-base sm:px-24",
         none: "",
+        relaxed: "leading-relaxed",
         select: "px-3 py-2 text-base data-readonly:w-fit",
       },
     },

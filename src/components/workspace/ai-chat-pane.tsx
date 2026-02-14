@@ -224,7 +224,7 @@ export function AiChatPane() {
             )}
             <ChatContainerScrollAnchor />
           </ChatContainerContent>
-          <div className="absolute bottom-40 right-5">
+          <div className="absolute bottom-4 right-5">
             <ScrollButton />
           </div>
         </ChatContainerRoot>

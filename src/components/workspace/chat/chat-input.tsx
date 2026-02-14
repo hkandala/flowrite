@@ -301,7 +301,7 @@ export function ChatInput() {
         <div className="flex flex-col justify-between rounded-xl border border-input shadow-xs min-h-30">
           <Plate editor={chatEditor} onChange={handleEditorChange}>
             <PlateContent
-              className="w-full bg-transparent p-4 text-sm leading-7 outline-none"
+              className="w-full bg-transparent p-4 text-sm outline-none"
               placeholder="ask ai anything..."
               onKeyDown={handleKeyDown}
             />

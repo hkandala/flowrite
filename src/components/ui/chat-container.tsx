@@ -23,7 +23,7 @@ function ChatContainerRoot({
 }: ChatContainerRootProps) {
   return (
     <StickToBottom
-      className={cn("flex", className)}
+      className={cn("relative flex", className)}
       resize="smooth"
       initial="instant"
       role="log"

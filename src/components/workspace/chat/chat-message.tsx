@@ -10,7 +10,6 @@ import { EditorStatic } from "@/components/ui/editor-static";
 import { ParagraphElementStatic } from "@/components/ui/paragraph-node-static";
 
 import { ChatMarkdown } from "./chat-markdown";
-import { UserMessageContent } from "@/components/chat/ui/user-message-content";
 
 import { PlanBlock } from "./plan-block";
 import { ThinkingBar } from "./thinking-bar";
@@ -31,8 +30,7 @@ function UserMessageStatic({ editorValue }: { editorValue: any[] }) {
     <EditorStatic
       editor={editor}
       value={editorValue}
-      variant="none"
-      className="leading-7"
+      variant="relaxed"
     />
   );
 }
@@ -46,12 +44,8 @@ export function ChatMessage({ message }: ChatMessageProps) {
 
   if (isUser) {
     return (
-      <div className="w-full rounded-lg border border-border bg-muted/35 p-3 text-sm text-foreground whitespace-pre-wrap wrap-break-word shadow-lg leading-7">
-        {message.editorValue ? (
-          <UserMessageStatic editorValue={message.editorValue} />
-        ) : (
-          <UserMessageContent content={message.content} />
-        )}
+      <div className="w-full rounded-lg border border-border bg-muted/35 p-3 text-sm text-foreground whitespace-pre-wrap wrap-break-word shadow-lg">
+        <UserMessageStatic editorValue={message.editorValue ?? []} />
       </div>
     );
   }
@@ -78,7 +72,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             return (
               <div
                 key={`text-${index}`}
-                className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5 py-1"
+                className="text-sm text-foreground wrap-break-word px-1.5 py-1"
               >
                 <ChatMarkdown>{segment.content}</ChatMarkdown>
               </div>
@@ -88,7 +82,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
             <ToolCallBlock key={toolCall.id} toolCall={toolCall} />
           ))}
       {!hasSegments && (message.content || message.isStreaming) && (
-        <div className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5">
+        <div className="text-sm text-foreground wrap-break-word px-1.5">
           {message.content ? (
             <ChatMarkdown>{message.content}</ChatMarkdown>
           ) : (
@@ -104,7 +98,7 @@ export function ChatMessage({ message }: ChatMessageProps) {
         message.isStreaming &&
         message.segments[message.segments.length - 1]?.type !== "text" &&
         !message.content && (
-          <div className="text-sm text-foreground wrap-break-word leading-relaxed px-1.5">
+          <div className="text-sm text-foreground wrap-break-word px-1.5">
             <span className="bg-[linear-gradient(to_right,var(--muted-foreground)_40%,var(--foreground)_60%,var(--muted-foreground)_80%)] bg-size-[200%_auto] bg-clip-text font-medium text-transparent animate-[shimmer_4s_infinite_linear] text-sm">
               thinking...
             </span>

@@ -55,6 +55,7 @@ const editorVariants = cva(
     "group/editor",
     "relative w-full cursor-text overflow-hidden break-words whitespace-pre-wrap select-text",
     "rounded-md ring-offset-background focus-visible:outline-none",
+    "font-[MonaspaceXenon,monospace]",
     "placeholder:text-foreground **:data-slate-placeholder:!top-1/2 **:data-slate-placeholder:-translate-y-1/2 **:data-slate-placeholder:text-foreground **:data-slate-placeholder:opacity-100!",
     "[&_strong]:font-bold",
   ),
@@ -74,7 +75,7 @@ const editorVariants = cva(
         aiChat:
           "max-h-[min(70vh,320px)] w-full max-w-[700px] overflow-y-auto px-3 py-2 text-base md:text-sm",
         comment: cn(
-          "rounded-none border-none bg-transparent text-sm",
+          "rounded-none border-none bg-transparent text-sm font-[MonaspaceRadon,monospace]",
           "**:data-slate-placeholder:text-muted-foreground/40! **:data-slate-placeholder:opacity-100!",
         ),
         default:

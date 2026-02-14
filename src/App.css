@@ -15,20 +15,47 @@
 @custom-variant dark (&:is(.dark *));
 
 @font-face {
-  font-family: "MonaspaceXenon";
+  font-family: "MonaspaceArgon";
   src:
-    url("./assets/fonts/MonaspaceXenonVarVF.woff2")
+    url("./assets/fonts/Monaspace Argon Var.woff2")
       format("woff2 supports variations"),
-    url("./assets/fonts/MonaspaceXenonVarVF.woff2") format("woff2-variations");
+    url("./assets/fonts/Monaspace Argon Var.woff2") format("woff2-variations");
   font-weight: 200 800;
 }
 
 @font-face {
-  font-family: "MonaspaceArgon";
+  font-family: "MonaspaceKrypton";
   src:
-    url("./assets/fonts/MonaspaceArgonVarVF.woff2")
+    url("./assets/fonts/Monaspace Krypton Var.woff2")
       format("woff2 supports variations"),
-    url("./assets/fonts/MonaspaceArgonVarVF.woff2") format("woff2-variations");
+    url("./assets/fonts/Monaspace Krypton Var.woff2") format("woff2-variations");
+  font-weight: 200 800;
+}
+
+@font-face {
+  font-family: "MonaspaceNeon";
+  src:
+    url("./assets/fonts/Monaspace Neon Var.woff2")
+      format("woff2 supports variations"),
+    url("./assets/fonts/Monaspace Neon Var.woff2") format("woff2-variations");
+  font-weight: 200 800;
+}
+
+@font-face {
+  font-family: "MonaspaceRadon";
+  src:
+    url("./assets/fonts/Monaspace Radon Var.woff2")
+      format("woff2 supports variations"),
+    url("./assets/fonts/Monaspace Radon Var.woff2") format("woff2-variations");
+  font-weight: 200 800;
+}
+
+@font-face {
+  font-family: "MonaspaceXenon";
+  src:
+    url("./assets/fonts/Monaspace Xenon Var.woff2")
+      format("woff2 supports variations"),
+    url("./assets/fonts/Monaspace Xenon Var.woff2") format("woff2-variations");
   font-weight: 200 800;
 }
 
@@ -43,7 +70,7 @@ body {
 
 :root {
   font-size: small;
-  font-family: "MonaspaceArgon", monospace;
+  font-family: "MonaspaceNeon", monospace;
   font-synthesis: none;
   text-rendering: optimizeLegibility;
   -webkit-font-smoothing: antialiased;

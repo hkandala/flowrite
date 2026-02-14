@@ -92,7 +92,7 @@ export function ChatMarkdown({ children }: ChatMarkdownProps) {
     <EditorStatic
       editor={editor}
       value={value}
-      variant="none"
+      variant="relaxed"
       className="space-y-2 [&_li]:my-0.5"
     />
   );
