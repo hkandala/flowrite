@@ -14,6 +14,7 @@ import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import matter from "gray-matter";
 import { MarkdownPlugin } from "@platejs/markdown";
 import { getCommentKey } from "@platejs/comment";
+import { CommentPlugin } from "@platejs/comment/react";
 import { nanoid, NodeApi } from "platejs";
 
 import { cn, getBaseDir, isInternalPath } from "@/lib/utils";
@@ -89,6 +90,50 @@ function richTextToPlain(value: unknown[]): string {
 }
 
 /**
+ * Build plain text from a Slate node tree, inserting "\n" between
+ * block-level children (elements with children arrays).
+ * Tracks character offsets for each text leaf via the callback.
+ */
+function buildPlainText(
+  nodes: any[],
+  onLeaf?: (textNode: any, offset: number) => void,
+): string {
+  const parts: string[] = [];
+  let offset = 0;
+
+  function walk(node: any) {
+    if (typeof node.text === "string") {
+      onLeaf?.(node, offset);
+      parts.push(node.text);
+      offset += node.text.length;
+      return;
+    }
+    if (node.children) {
+      for (let i = 0; i < node.children.length; i++) {
+        const child = node.children[i];
+        // Insert \n before block-level children (except the first)
+        const isBlock = child.children != null;
+        if (isBlock && i > 0) {
+          parts.push("\n");
+          offset += 1;
+        }
+        walk(child);
+      }
+    }
+  }
+
+  for (let i = 0; i < nodes.length; i++) {
+    if (i > 0) {
+      parts.push("\n");
+      offset += 1;
+    }
+    walk(nodes[i]);
+  }
+
+  return parts.join("");
+}
+
+/**
  * Serialize discussions to frontmatter format using TextQuoteSelector.
  * Prefix/suffix are extracted from Slate plain text for clean,
  * readable YAML without markdown syntax characters.
@@ -112,23 +157,16 @@ function serializeDiscussions(
 
   const blocks = editor.children;
 
-  // Build full plain text from Slate blocks for selector extraction
-  const blockTexts = blocks.map((block) => NodeApi.string(block as any));
-  const fullText = blockTexts.join("\n");
-
-  // Precompute character offset for the start of each top-level block
-  const blockStartPos: number[] = [];
-  let cumPos = 0;
-  for (let i = 0; i < blockTexts.length; i++) {
-    blockStartPos.push(cumPos);
-    cumPos += blockTexts[i].length + 1; // +1 for "\n" separator
-  }
+  // Build full plain text with precise leaf offsets using recursive walker
+  const leafOffsets = new Map<any, number>();
+  const fullText = buildPlainText(blocks, (textNode, offset) => {
+    leafOffsets.set(textNode, offset);
+  });
 
   for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
     const block = blocks[blockIdx];
     const textNodes = Array.from(NodeApi.texts(block as any));
 
-    let inBlockOffset = 0;
     for (const [textNode] of textNodes) {
       const text = (textNode as any).text as string;
       const keys = Object.keys(textNode).filter(
@@ -142,7 +180,7 @@ function serializeDiscussions(
           posMap.set(discussionId, {
             docContent: text,
             lastSeenBlock: blockIdx,
-            charOffset: blockStartPos[blockIdx] + inBlockOffset,
+            charOffset: leafOffsets.get(textNode) ?? 0,
           });
         } else {
           if (existing.lastSeenBlock === blockIdx) {
@@ -153,7 +191,6 @@ function serializeDiscussions(
           }
         }
       }
-      inBlockOffset += text.length;
     }
   }
 
@@ -197,18 +234,11 @@ function serializeDiscussions(
         selector = { exact };
 
         if (!isUnique) {
-          // Extract prefix: up to 32 chars before, trimmed at paragraph boundary
-          const rawPrefix = fullText.slice(
+          const prefix = fullText.slice(
             Math.max(0, matchStart - 32),
             matchStart,
           );
-          const lastNl = rawPrefix.lastIndexOf("\n");
-          const prefix = lastNl >= 0 ? rawPrefix.slice(lastNl + 1) : rawPrefix;
-
-          // Extract suffix: up to 32 chars after, trimmed at paragraph boundary
-          const rawSuffix = fullText.slice(matchEnd, matchEnd + 32);
-          const firstNl = rawSuffix.indexOf("\n");
-          const suffix = firstNl >= 0 ? rawSuffix.slice(0, firstNl) : rawSuffix;
+          const suffix = fullText.slice(matchEnd, matchEnd + 32);
 
           if (prefix) selector.prefix = prefix;
           if (suffix) selector.suffix = suffix;
@@ -484,6 +514,12 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   // file watcher self-save guard
   const lastSaveTimestampRef = useRef(0);
 
+  // orphan discussion cleanup timer
+  const orphanCleanupTimerRef =
+    useRef<ReturnType<typeof setTimeout>>(undefined);
+  // track which discussions were auto-resolved (vs manually resolved by user)
+  const autoResolvedIdsRef = useRef(new Set<string>());
+
   const editorMaximized = useWorkspaceStore((s) => s.editorMaximized);
   const toggleEditorMaximized = useWorkspaceStore(
     (s) => s.toggleEditorMaximized,
@@ -678,7 +714,36 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     const yamlMatch = raw.match(/^---\n([\s\S]*?)\n---/);
     const yaml = yamlMatch ? yamlMatch[1] : "";
 
-    if (!yaml.trim()) return;
+    if (!yaml.trim()) {
+      // No metadata left — remove frontmatter from file if it previously had some
+      if (!hasOriginalFrontmatterRef.current) return;
+
+      try {
+        if (isExternal) {
+          const rawContent = await invoke<string>("read_external_file", {
+            path: filePath,
+          });
+          const parsed = matter(rawContent);
+          // Write back just the content without frontmatter
+          await invoke("update_external_file", {
+            path: filePath,
+            content: parsed.content,
+          });
+        } else {
+          // Remove frontmatter by writing full file via update_file
+          const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+          await invoke("update_file", {
+            path: filePath,
+            content: markdown,
+          });
+          hasOriginalFrontmatterRef.current = false;
+        }
+        lastSaveTimestampRef.current = Date.now();
+      } catch (err) {
+        console.error("failed to clear metadata:", err);
+      }
+      return;
+    }
 
     try {
       if (isExternal) {
@@ -709,6 +774,51 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       clearTimeout(metadataPersistTimerRef.current);
     metadataPersistTimerRef.current = setTimeout(doMetadataPersist, 500);
   }, [doMetadataPersist]);
+
+  const cleanupOrphanedDiscussions = useCallback(() => {
+    if (!editor || !initialLoadCompleteRef.current) return;
+
+    const discussions = editor.getOption(discussionPlugin, "discussions");
+    const commentApi = editor.getApi(CommentPlugin).comment;
+
+    const orphanIds: string[] = [];
+    const restoredIds: string[] = [];
+
+    for (const d of discussions) {
+      if (!d.documentContent) continue;
+
+      if (!d.isResolved) {
+        // Unresolved discussion whose marks are gone → auto-resolve
+        if (!commentApi.has({ id: d.id })) {
+          orphanIds.push(d.id);
+        }
+      } else if (autoResolvedIdsRef.current.has(d.id)) {
+        // Auto-resolved discussion whose marks came back (undo/cut-paste) → un-resolve
+        if (commentApi.has({ id: d.id })) {
+          restoredIds.push(d.id);
+        }
+      }
+    }
+
+    if (orphanIds.length === 0 && restoredIds.length === 0) return;
+
+    for (const id of orphanIds) {
+      autoResolvedIdsRef.current.add(id);
+    }
+    for (const id of restoredIds) {
+      autoResolvedIdsRef.current.delete(id);
+    }
+
+    const orphanSet = new Set(orphanIds);
+    const restoredSet = new Set(restoredIds);
+    const updated = discussions.map((d: TDiscussion) => {
+      if (orphanSet.has(d.id)) return { ...d, isResolved: true };
+      if (restoredSet.has(d.id)) return { ...d, isResolved: false };
+      return d;
+    });
+    editor.setOption(discussionPlugin, "discussions", updated);
+    triggerPersistMetadata();
+  }, [editor, triggerPersistMetadata]);
 
   const toggleFullWidth = useCallback(() => {
     setIsFullWidth((prev) => {
@@ -882,6 +992,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       if (metadataPersistTimerRef.current) {
         clearTimeout(metadataPersistTimerRef.current);
       }
+      if (orphanCleanupTimerRef.current) {
+        clearTimeout(orphanCleanupTimerRef.current);
+      }
     };
   }, []);
 
@@ -1032,7 +1145,12 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     } else {
       markClean(props.api.id);
     }
-  }, [editor, props.api.id, markDirty, markClean]);
+
+    // Schedule orphan cleanup (debounced)
+    if (orphanCleanupTimerRef.current)
+      clearTimeout(orphanCleanupTimerRef.current);
+    orphanCleanupTimerRef.current = setTimeout(cleanupOrphanedDiscussions, 500);
+  }, [editor, props.api.id, markDirty, markClean, cleanupOrphanedDiscussions]);
 
   // mouse movement: show buttons (unless mid-scroll)
   const handleMouseMove = useCallback(() => {

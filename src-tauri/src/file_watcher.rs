@@ -299,6 +299,12 @@ fn process_path(base_path: &Path, path: &Path, kind: &str, accumulator: &mut Eve
         // .md file event - track for collation (directory changes determined after)
         accumulator.add_file_event(relative_path.clone(), kind);
         log::debug!("file {kind}: {relative_path}");
+    } else if !path.exists() && path.extension().is_none() {
+        // path is gone and has no extension — likely a removed/renamed directory.
+        // emit dir event for parent to be safe (harmless if it was a file).
+        let parent = get_parent_dir(&relative_path);
+        accumulator.add_dir_event(parent);
+        log::debug!("directory (inferred) {kind}: {relative_path}");
     }
 }
 

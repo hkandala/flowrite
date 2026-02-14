@@ -13,6 +13,34 @@ import { toTPlatePlugin, useEditorSelection } from "platejs/react";
 import { CommentLeaf } from "@/components/ui/comment-node";
 import { useWorkspaceStore } from "@/store/workspace-store";
 
+/** Deep-clone nodes, stripping comment / comment_* keys from text leaves. */
+function stripCommentMarksFromFragment(nodes: any[]): any[] {
+  return nodes.map((node) => {
+    if (typeof node.text === "string") {
+      const cleaned = { ...node };
+      for (const key of Object.keys(cleaned)) {
+        if (
+          key === "comment" ||
+          (key.startsWith("comment_") && key !== "comment_draft")
+        ) {
+          delete cleaned[key];
+        }
+      }
+      return cleaned;
+    }
+    if (node.children) {
+      return {
+        ...node,
+        children: stripCommentMarksFromFragment(node.children),
+      };
+    }
+    return node;
+  });
+}
+
+/** Ref shared between onCut handler and insertFragment override. */
+const isCutRef = { current: false };
+
 type CommentConfig = ExtendConfig<
   BaseCommentConfig,
   {
@@ -62,6 +90,9 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
 
       if (!isSet) unsetActiveSuggestion();
     },
+    onCut: () => {
+      isCutRef.current = true;
+    },
   },
   options: {
     activeId: null,
@@ -96,6 +127,18 @@ export const commentPlugin = toTPlatePlugin<CommentConfig>(BaseCommentPlugin, {
       },
     }),
   )
+  .overrideEditor(({ tf: { insertFragment } }) => ({
+    transforms: {
+      insertFragment(fragment, options) {
+        if (isCutRef.current) {
+          isCutRef.current = false;
+          insertFragment(fragment, options);
+        } else {
+          insertFragment(stripCommentMarksFromFragment(fragment), options);
+        }
+      },
+    },
+  }))
   .configure({
     node: { component: CommentLeaf },
     shortcuts: {
