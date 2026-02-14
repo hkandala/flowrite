@@ -5,13 +5,11 @@ use std::{
 
 use sacp::{
     schema::{
-        AvailableCommandInput, CancelNotification, ClientCapabilities, ContentBlock,
-        CurrentModeUpdate, FileSystemCapability, InitializeRequest, PermissionOptionKind,
-        PlanEntryStatus, ProtocolVersion, ReadTextFileRequest, ReadTextFileResponse,
+        AvailableCommandInput, CancelNotification, ContentBlock, CurrentModeUpdate,
+        InitializeRequest, PermissionOptionKind, PlanEntryStatus, ProtocolVersion,
         RequestPermissionOutcome, RequestPermissionRequest, RequestPermissionResponse,
         SelectedPermissionOutcome, SessionNotification, SessionUpdate, SetSessionModeRequest,
         StopReason, ToolCall, ToolCallContent, ToolCallLocation, ToolCallStatus, ToolKind,
-        WriteTextFileRequest, WriteTextFileResponse,
     },
     util::MatchMessage,
     ClientToAgent, SessionMessage,
@@ -222,13 +220,6 @@ pub enum AgentEvent {
     },
     Error {
         message: String,
-    },
-    #[serde(rename_all = "camelCase")]
-    FileDiff {
-        session_id: String,
-        path: String,
-        old_text: Option<String>,
-        new_text: String,
     },
 }
 
@@ -715,8 +706,6 @@ async fn run_agent_task(
     };
 
     let shared_for_permissions = shared.clone();
-    let shared_for_write = shared.clone();
-    let app_handle_for_write = app_handle.clone();
     let permission_agent_id = agent_id.clone();
     let connection_result = ClientToAgent::builder()
         .name("flowrite")
@@ -725,24 +714,6 @@ async fn run_agent_task(
                 handle_permission_request(
                     permission_agent_id.clone(),
                     shared_for_permissions.clone(),
-                    request,
-                    request_cx,
-                )
-                .await
-            },
-            sacp::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: ReadTextFileRequest, request_cx, _cx| {
-                handle_read_text_file(request, request_cx).await
-            },
-            sacp::on_receive_request!(),
-        )
-        .on_receive_request(
-            async move |request: WriteTextFileRequest, request_cx, _cx| {
-                handle_write_text_file(
-                    shared_for_write.clone(),
-                    app_handle_for_write.clone(),
                     request,
                     request_cx,
                 )
@@ -824,11 +795,7 @@ async fn run_agent_command_loop(
     captured_commands: CapturedCommands,
     log_path_string: String,
 ) -> Result<(), sacp::Error> {
-    let init_request = InitializeRequest::new(ProtocolVersion::LATEST).client_capabilities(
-        ClientCapabilities::new().fs(FileSystemCapability::new()
-            .read_text_file(true)
-            .write_text_file(true)),
-    );
+    let init_request = InitializeRequest::new(ProtocolVersion::LATEST);
     let init_response = tokio::time::timeout(
         Duration::from_secs(30),
         cx.send_request(init_request).block_task(),
@@ -1307,117 +1274,6 @@ async fn handle_permission_request(
     };
 
     request_cx.respond(response)
-}
-
-async fn handle_read_text_file(
-    request: ReadTextFileRequest,
-    request_cx: sacp::JrRequestCx<ReadTextFileResponse>,
-) -> Result<(), sacp::Error> {
-    let path = request.path;
-    log::info!("[acp] fs/read_text_file path={}", path.display());
-
-    let content = match tokio::fs::read_to_string(&path).await {
-        Ok(content) => content,
-        Err(e) => {
-            log::warn!("[acp] fs/read_text_file failed: {e}");
-            return request_cx.respond_with_error(sacp::util::internal_error(format!(
-                "failed to read file: {e}"
-            )));
-        }
-    };
-
-    // Apply line/limit parameters for partial reads
-    let result = match (request.line, request.limit) {
-        (Some(start_line), Some(limit)) => {
-            let start = (start_line.saturating_sub(1)) as usize;
-            content
-                .lines()
-                .skip(start)
-                .take(limit as usize)
-                .collect::<Vec<_>>()
-                .join("\n")
-        }
-        (Some(start_line), None) => {
-            let start = (start_line.saturating_sub(1)) as usize;
-            content.lines().skip(start).collect::<Vec<_>>().join("\n")
-        }
-        (None, Some(limit)) => content
-            .lines()
-            .take(limit as usize)
-            .collect::<Vec<_>>()
-            .join("\n"),
-        (None, None) => content,
-    };
-
-    request_cx.respond(ReadTextFileResponse::new(result))
-}
-
-async fn handle_write_text_file(
-    shared: Arc<tokio::sync::Mutex<RuntimeShared>>,
-    app_handle: AppHandle,
-    request: WriteTextFileRequest,
-    request_cx: sacp::JrRequestCx<WriteTextFileResponse>,
-) -> Result<(), sacp::Error> {
-    let path = request.path;
-    let new_content = request.content;
-    let session_id = request.session_id.0.to_string();
-    log::info!("[acp] fs/write_text_file path={}", path.display());
-
-    // 1. Read current file content (old text)
-    let old_text = tokio::fs::read_to_string(&path).await.ok();
-
-    // 2. Create parent dirs if needed
-    if let Some(parent) = path.parent() {
-        if let Err(e) = tokio::fs::create_dir_all(parent).await {
-            log::warn!("[acp] fs/write_text_file create_dir_all failed: {e}");
-            return request_cx.respond_with_error(sacp::util::internal_error(format!(
-                "failed to create parent directories: {e}"
-            )));
-        }
-    }
-
-    // 3. Write new content
-    if let Err(e) = tokio::fs::write(&path, &new_content).await {
-        log::warn!("[acp] fs/write_text_file write failed: {e}");
-        return request_cx.respond_with_error(sacp::util::internal_error(format!(
-            "failed to write file: {e}"
-        )));
-    }
-
-    // 4. Git checkpoint in background — only if within the nb home dir
-    if let Ok(base_dir) = crate::utils::get_base_dir(&app_handle) {
-        if path.starts_with(&base_dir) {
-            let checkpoint_handle = app_handle.clone();
-            let checkpoint_path = path.display().to_string();
-            tauri::async_runtime::spawn(async move {
-                if let Err(e) = crate::nb::git_checkpoint(
-                    &checkpoint_handle,
-                    &format!("agent edit: {checkpoint_path}"),
-                )
-                .await
-                {
-                    log::warn!("[acp] git checkpoint failed: {e}");
-                }
-            });
-        }
-    }
-
-    // 5. Send FileDiff event through the active stream Channel
-    let path_string = path.display().to_string();
-    {
-        let runtime = shared.lock().await;
-        if let Some(stream) = runtime.active_streams.get(&session_id) {
-            let _ = stream.channel.send(AgentEvent::FileDiff {
-                session_id: session_id.clone(),
-                path: path_string,
-                old_text,
-                new_text: new_content,
-            });
-        }
-    }
-
-    // 6. Respond
-    request_cx.respond(WriteTextFileResponse::new())
 }
 
 fn content_block_kind(content: &ContentBlock) -> &'static str {

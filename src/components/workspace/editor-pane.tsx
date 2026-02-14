@@ -9,6 +9,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
 import matter from "gray-matter";
 import { MarkdownPlugin } from "@platejs/markdown";
@@ -16,6 +17,7 @@ import { getCommentKey } from "@platejs/comment";
 import { nanoid, NodeApi } from "platejs";
 
 import { cn, getBaseDir, isInternalPath } from "@/lib/utils";
+import { FILE_WATCHER_EVENT } from "@/lib/constants";
 import { Editor as PlateEditor, EditorContainer } from "@/components/ui/editor";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -50,8 +52,6 @@ import {
   type TDiscussion,
 } from "../editor/plugins/discussion-kit";
 import type { TComment } from "@/components/ui/comment";
-import { useDiffStore } from "@/store/diff-store";
-import { DiffOverlay } from "@/components/workspace/diff-overlay";
 
 const BUTTON_TIMEOUT = 1500;
 const SCROLL_DEBOUNCE = 300;
@@ -63,7 +63,7 @@ function lastElement<T>(arr: T[]): T | undefined {
 
 // --- comment serialization/deserialization ---
 
-import { matchQuote, type TextQuoteSelector } from "@/lib/match-quote";
+import { matchQuote } from "@/lib/match-quote";
 
 interface SerializedComment {
   user: string;
@@ -88,88 +88,25 @@ function richTextToPlain(value: unknown[]): string {
   return value.map((node) => NodeApi.string(node as any)).join("\n");
 }
 
-/** Extract plain text from each block in the Slate tree. */
-function getBlockTexts(blocks: any[]): string[] {
-  return blocks.map((block) =>
-    block.children
-      ? block.children
-          .filter((c: any) => c.text !== undefined)
-          .map((c: any) => c.text)
-          .join("")
-      : "",
-  );
-}
-
-/**
- * Extract ~charCount characters of text preceding a position.
- * Walks backward through blocks to collect enough context.
- */
-function extractPrefix(
-  blockTexts: string[],
-  blockIdx: number,
-  offset: number,
-  charCount: number,
-): string {
-  let result = blockTexts[blockIdx].slice(0, offset);
-
-  let b = blockIdx - 1;
-  while (result.length < charCount && b >= 0) {
-    result = blockTexts[b] + "\n" + result;
-    b--;
-  }
-
-  if (result.length > charCount) {
-    result = result.slice(result.length - charCount);
-  }
-
-  return result;
-}
-
-/**
- * Extract ~charCount characters of text following a position.
- * Walks forward through blocks to collect enough context.
- */
-function extractSuffix(
-  blockTexts: string[],
-  blockIdx: number,
-  offset: number,
-  charCount: number,
-): string {
-  let result = blockTexts[blockIdx].slice(offset);
-
-  let b = blockIdx + 1;
-  while (result.length < charCount && b < blockTexts.length) {
-    result = result + "\n" + blockTexts[b];
-    b++;
-  }
-
-  if (result.length > charCount) {
-    result = result.slice(0, charCount);
-  }
-
-  return result;
-}
-
 /**
  * Serialize discussions to frontmatter format using TextQuoteSelector.
- * No marker injection into the Slate tree — only builds frontmatter data.
+ * Prefix/suffix are extracted from the serialized markdown for proper
+ * disambiguation and agent readability.
  */
 function serializeDiscussions(
   editor: ReturnType<typeof createPlateEditor>,
   discussions: TDiscussion[],
+  markdown: string,
 ): SerializedDiscussion[] {
   const activeDiscussions = discussions.filter((d) => !d.isResolved);
   if (activeDiscussions.length === 0) return [];
 
-  // Build posMap: discussionId → position range + document content
+  // Build posMap: discussionId → document content from Slate marks
   const posMap = new Map<
     string,
     {
-      startBlock: number;
-      startOffset: number;
-      endBlock: number;
-      endOffset: number;
       docContent: string;
+      firstBlock: number;
       lastSeenBlock: number;
     }
   >();
@@ -179,7 +116,6 @@ function serializeDiscussions(
   for (let blockIdx = 0; blockIdx < blocks.length; blockIdx++) {
     const block = blocks[blockIdx];
     const textNodes = Array.from(NodeApi.texts(block as any));
-    let charOffset = 0;
 
     for (const [textNode] of textNodes) {
       const text = (textNode as any).text as string;
@@ -192,16 +128,11 @@ function serializeDiscussions(
         const existing = posMap.get(discussionId);
         if (!existing) {
           posMap.set(discussionId, {
-            startBlock: blockIdx,
-            startOffset: charOffset,
-            endBlock: blockIdx,
-            endOffset: charOffset + text.length,
             docContent: text,
+            firstBlock: blockIdx,
             lastSeenBlock: blockIdx,
           });
         } else {
-          existing.endBlock = blockIdx;
-          existing.endOffset = charOffset + text.length;
           if (existing.lastSeenBlock === blockIdx) {
             existing.docContent += text;
           } else {
@@ -210,15 +141,11 @@ function serializeDiscussions(
           }
         }
       }
-
-      charOffset += text.length;
     }
   }
 
-  // Extract plain text per block for prefix/suffix computation
-  const blockTexts = getBlockTexts(blocks as any[]);
-
   // Build serialized discussions with selectors
+  // Find exact text in markdown and extract prefix/suffix from there
   const serialized: SerializedDiscussion[] = [];
 
   for (const discussion of activeDiscussions) {
@@ -227,18 +154,29 @@ function serializeDiscussions(
 
     let selector: SerializedSelector | undefined;
 
-    if (exact && pos) {
-      const prefix = extractPrefix(
-        blockTexts,
-        pos.startBlock,
-        pos.startOffset,
-        32,
-      );
-      const suffix = extractSuffix(blockTexts, pos.endBlock, pos.endOffset, 32);
+    if (exact) {
+      // Use matchQuote for fuzzy matching (handles formatting boundaries like **bold**)
+      const hint = pos
+        ? Math.round(
+            (pos.firstBlock / Math.max(blocks.length, 1)) * markdown.length,
+          )
+        : undefined;
+      const match = matchQuote(markdown, exact, { hint });
 
-      selector = { exact };
-      if (prefix) selector.prefix = prefix;
-      if (suffix) selector.suffix = suffix;
+      if (match) {
+        const prefix = markdown.slice(
+          Math.max(0, match.start - 32),
+          match.start,
+        );
+        const suffix = markdown.slice(match.end, match.end + 32);
+
+        selector = { exact };
+        if (prefix) selector.prefix = prefix;
+        if (suffix) selector.suffix = suffix;
+      } else {
+        // Fallback: store exact only (no prefix/suffix) if not found in markdown
+        selector = { exact };
+      }
     }
 
     serialized.push({
@@ -255,24 +193,59 @@ function serializeDiscussions(
   return serialized;
 }
 
+// --- ephemeral marker helpers ---
+
+const MARKER_DELIM = "\uE000";
+
+function makeStartMarker(id: string): string {
+  return `${MARKER_DELIM}S${id}${MARKER_DELIM}`;
+}
+
+function makeEndMarker(id: string): string {
+  return `${MARKER_DELIM}E${id}${MARKER_DELIM}`;
+}
+
+const MARKER_RE = /\uE000([SE])([A-Za-z]{4})\uE000/g;
+
 /**
  * Deserialize frontmatter discussions.
- * Generates runtime IDs (not persisted) and builds a selector map for anchoring.
+ * Generates runtime IDs, matches selectors against raw markdown,
+ * and injects ephemeral markers so the markdown parser carries position
+ * information into the Slate tree.
  */
-function deserializeDiscussions(serialized: SerializedDiscussion[]): {
+function deserializeDiscussions(
+  markdown: string,
+  serialized: SerializedDiscussion[],
+): {
+  markedMarkdown: string;
   discussions: TDiscussion[];
   users: Record<string, { id: string; name: string }>;
-  selectorMap: Map<string, TextQuoteSelector>;
 } {
   const users: Record<string, { id: string; name: string }> = {};
   const discussions: TDiscussion[] = [];
-  const selectorMap = new Map<string, TextQuoteSelector>();
+  const injections: { pos: number; marker: string; isEnd: boolean }[] = [];
 
   for (const sd of serialized) {
     const discussionId = generateDiscussionId();
 
+    // Match selector against raw markdown and collect injection points
     if (sd.selector) {
-      selectorMap.set(discussionId, sd.selector);
+      const match = matchQuote(markdown, sd.selector.exact, {
+        prefix: sd.selector.prefix,
+        suffix: sd.selector.suffix,
+      });
+      if (match) {
+        injections.push({
+          pos: match.start,
+          marker: makeStartMarker(discussionId),
+          isEnd: false,
+        });
+        injections.push({
+          pos: match.end,
+          marker: makeEndMarker(discussionId),
+          isEnd: true,
+        });
+      }
     }
 
     const comments: TComment[] = sd.comments.map((sc) => {
@@ -308,165 +281,115 @@ function deserializeDiscussions(serialized: SerializedDiscussion[]): {
     });
   }
 
-  return { discussions, users, selectorMap };
-}
-
-/**
- * Convert a global character offset in flattened document text
- * to a { blockIndex, offset } position within the Slate block array.
- */
-function globalOffsetToBlockPosition(
-  blockTexts: string[],
-  globalOffset: number,
-): { blockIndex: number; offset: number } {
-  let consumed = 0;
-  for (let i = 0; i < blockTexts.length; i++) {
-    const blockLen = blockTexts[i].length;
-    if (globalOffset <= consumed + blockLen) {
-      return { blockIndex: i, offset: globalOffset - consumed };
-    }
-    consumed += blockLen + 1; // +1 for the \n separator
-  }
-  const lastIdx = blockTexts.length - 1;
-  return { blockIndex: lastIdx, offset: blockTexts[lastIdx].length };
-}
-
-/**
- * Find a text range in the Slate value using TextQuoteSelector and matchQuote.
- */
-function findTextWithSelector(
-  value: any[],
-  selector: TextQuoteSelector,
-): {
-  startBlock: number;
-  startOffset: number;
-  endBlock: number;
-  endOffset: number;
-} | null {
-  const blockTexts = getBlockTexts(value);
-  const fullText = blockTexts.join("\n");
-
-  const match = matchQuote(fullText, selector.exact, {
-    prefix: selector.prefix,
-    suffix: selector.suffix,
+  // Sort injections descending by position so earlier injections
+  // don't shift later positions. At same position: end markers first.
+  injections.sort((a, b) => {
+    if (a.pos !== b.pos) return b.pos - a.pos;
+    // end markers before start markers at same position
+    return a.isEnd === b.isEnd ? 0 : a.isEnd ? -1 : 1;
   });
 
-  if (!match) return null;
+  let markedMarkdown = markdown;
+  for (const inj of injections) {
+    markedMarkdown =
+      markedMarkdown.slice(0, inj.pos) +
+      inj.marker +
+      markedMarkdown.slice(inj.pos);
+  }
 
-  const startPos = globalOffsetToBlockPosition(blockTexts, match.start);
-  const endPos = globalOffsetToBlockPosition(blockTexts, match.end);
-
-  return {
-    startBlock: startPos.blockIndex,
-    startOffset: startPos.offset,
-    endBlock: endPos.blockIndex,
-    endOffset: endPos.offset,
-  };
+  return { markedMarkdown, discussions, users };
 }
 
 /**
- * Apply comment marks to the Slate tree by matching selectors.
+ * Walk the Slate tree, find ephemeral markers in text nodes,
+ * strip them, and apply comment marks at the exact positions.
+ * `activeIds` persists across blocks so multi-block comments work.
  */
-function applyCommentMarksBySelector(
-  value: any[],
-  discussions: TDiscussion[],
-  selectorMap: Map<string, TextQuoteSelector>,
-) {
-  for (const discussion of discussions) {
-    const selector = selectorMap.get(discussion.id);
-    if (!selector) continue;
+function stripMarkersAndApplyComments(nodes: any[]): void {
+  const activeIds = new Set<string>();
 
-    const range = findTextWithSelector(value, selector);
-    if (!range) continue;
+  function processNode(node: any): void {
+    if (!node.children) return;
 
-    const commentKey = getCommentKey(discussion.id);
-
-    if (range.startBlock === range.endBlock) {
-      applyMarkToBlock(
-        value,
-        range.startBlock,
-        range.startOffset,
-        range.endOffset,
-        commentKey,
-      );
-    } else {
-      applyMarkToBlock(
-        value,
-        range.startBlock,
-        range.startOffset,
-        -1,
-        commentKey,
-      );
-      for (let b = range.startBlock + 1; b < range.endBlock; b++) {
-        applyMarkToBlock(value, b, 0, -1, commentKey);
+    const newChildren: any[] = [];
+    for (const child of node.children) {
+      if (child.text !== undefined) {
+        processTextNode(child, activeIds, newChildren);
+      } else {
+        processNode(child);
+        newChildren.push(child);
       }
-      applyMarkToBlock(value, range.endBlock, 0, range.endOffset, commentKey);
     }
+    node.children = newChildren;
+  }
+
+  for (const node of nodes) {
+    processNode(node);
   }
 }
 
-/**
- * Directly mutate a block's children to apply a comment mark
- * in the range [startOffset, endOffset). endOffset of -1 means end of block.
- */
-function applyMarkToBlock(
-  value: any[],
-  blockIndex: number,
-  startOffset: number,
-  endOffset: number,
-  commentKey: string,
-) {
-  const block = value[blockIndex];
-  if (!block?.children) return;
+function processTextNode(
+  textNode: any,
+  activeIds: Set<string>,
+  output: any[],
+): void {
+  const text: string = textNode.text;
 
-  const totalLen = block.children.reduce(
-    (sum: number, n: any) => sum + (n.text?.length ?? 0),
-    0,
-  );
-  const actualEnd = endOffset === -1 ? totalLen : endOffset;
-  if (startOffset >= actualEnd) return;
-
-  // Build new children array with the mark applied at the right positions
-  const newChildren: any[] = [];
-  let pos = 0;
-
-  for (const child of block.children) {
-    if (child.text === undefined) {
-      // Non-text node (inline element) — pass through
-      newChildren.push(child);
-      continue;
+  // Fast path: no markers in this node
+  if (!text.includes(MARKER_DELIM)) {
+    if (text.length > 0) {
+      emitText(textNode, text, activeIds, output);
     }
-
-    const text: string = child.text;
-    const nodeStart = pos;
-    const nodeEnd = pos + text.length;
-
-    if (nodeEnd <= startOffset || nodeStart >= actualEnd) {
-      // No overlap — keep as-is
-      newChildren.push(child);
-    } else {
-      // Overlap — split into up to 3 parts: before, marked, after
-      const overlapStart = Math.max(startOffset, nodeStart) - nodeStart;
-      const overlapEnd = Math.min(actualEnd, nodeEnd) - nodeStart;
-
-      if (overlapStart > 0) {
-        newChildren.push({ ...child, text: text.slice(0, overlapStart) });
-      }
-      newChildren.push({
-        ...child,
-        text: text.slice(overlapStart, overlapEnd),
-        [commentKey]: true,
-        comment: true,
-      });
-      if (overlapEnd < text.length) {
-        newChildren.push({ ...child, text: text.slice(overlapEnd) });
-      }
-    }
-
-    pos = nodeEnd;
+    return;
   }
 
-  block.children = newChildren;
+  // Scan for markers
+  let lastIndex = 0;
+  MARKER_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+
+  while ((m = MARKER_RE.exec(text)) !== null) {
+    // Emit text segment before this marker
+    const segment = text.slice(lastIndex, m.index);
+    if (segment.length > 0) {
+      emitText(textNode, segment, activeIds, output);
+    }
+
+    // Process marker: update activeIds
+    const type = m[1]; // "S" or "E"
+    const id = m[2]; // 4-char discussion ID
+    if (type === "S") {
+      activeIds.add(id);
+    } else {
+      activeIds.delete(id);
+    }
+
+    lastIndex = m.index + m[0].length;
+  }
+
+  // Emit remaining text after last marker
+  const remaining = text.slice(lastIndex);
+  if (remaining.length > 0) {
+    emitText(textNode, remaining, activeIds, output);
+  }
+}
+
+function emitText(
+  originalNode: any,
+  text: string,
+  activeIds: Set<string>,
+  output: any[],
+): void {
+  const node: any = { ...originalNode, text };
+
+  if (activeIds.size > 0) {
+    node.comment = true;
+    for (const id of activeIds) {
+      node[getCommentKey(id)] = true;
+    }
+  }
+
+  output.push(node);
 }
 
 const editorPlugins = [
@@ -507,8 +430,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
   const [isFullWidth, setIsFullWidth] = useState(false);
   const [showButtons, setShowButtons] = useState(false);
-  const [showDiffOverlay, setShowDiffOverlay] = useState(false);
-  const [absoluteFilePath, setAbsoluteFilePath] = useState<string | null>(null);
 
   const containerRef = useRef<HTMLDivElement>(null);
   const btnTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined);
@@ -518,6 +439,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
   // dirty tracking refs
   const savedUndoRef = useRef<unknown>(null);
   const initialLoadCompleteRef = useRef(false);
+
+  // file watcher self-save guard
+  const lastSaveTimestampRef = useRef(0);
 
   const editorMaximized = useWorkspaceStore((s) => s.editorMaximized);
   const toggleEditorMaximized = useWorkspaceStore(
@@ -546,10 +470,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       return;
     }
 
-    // Serialize discussions to frontmatter
+    // Serialize markdown first, then discussions (needs markdown for prefix/suffix)
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const serialized = serializeDiscussions(editor, discussions);
     const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+    const serialized = serializeDiscussions(editor, discussions, markdown);
 
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
@@ -575,6 +499,8 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
         content: rawContent,
       });
     }
+
+    lastSaveTimestampRef.current = Date.now();
 
     // update dirty tracking
     savedUndoRef.current = lastElement(editor.history.undos) ?? null;
@@ -609,10 +535,10 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     if (!selectedPath) return;
 
-    // Serialize discussions to frontmatter
+    // Serialize markdown first, then discussions (needs markdown for prefix/suffix)
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const serialized = serializeDiscussions(editor, discussions);
     const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+    const serialized = serializeDiscussions(editor, discussions, markdown);
     const isExtPath = !(await isInternalPath(selectedPath));
 
     if (serialized.length > 0) {
@@ -699,7 +625,8 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     // Serialize discussions into metadataRef
     const discussions = editor.getOption(discussionPlugin, "discussions");
-    const serialized = serializeDiscussions(editor, discussions);
+    const markdown = editor.getApi(MarkdownPlugin).markdown.serialize();
+    const serialized = serializeDiscussions(editor, discussions, markdown);
     if (serialized.length > 0) {
       metadataRef.current.discussions = serialized;
     } else {
@@ -716,6 +643,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     try {
       await invoke("write_file_metadata", { path: filePath, yaml });
+      lastSaveTimestampRef.current = Date.now();
     } catch (err) {
       console.error("failed to auto-save metadata:", err);
     }
@@ -771,6 +699,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     let cancelled = false;
 
     const init = async () => {
+      // --- Normal mode: load file from disk ---
       if (filePath) {
         setIsLoading(true);
         initialLoadCompleteRef.current = false;
@@ -802,9 +731,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
           // Deserialize discussions from frontmatter
           let discussionState:
             | {
+                markedMarkdown: string;
                 discussions: TDiscussion[];
                 users: Record<string, { id: string; name: string }>;
-                selectorMap: Map<string, TextQuoteSelector>;
               }
             | undefined;
 
@@ -812,23 +741,25 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             parsed.data.discussions &&
             Array.isArray(parsed.data.discussions)
           ) {
-            discussionState = deserializeDiscussions(parsed.data.discussions);
+            discussionState = deserializeDiscussions(
+              parsed.content,
+              parsed.data.discussions,
+            );
           }
 
           const ed = createPlateEditor({
             plugins: editorPlugins,
             value: (editor) => {
+              const contentToDeserialize = discussionState
+                ? discussionState.markedMarkdown
+                : parsed.content;
               const nodes = editor
                 .getApi(MarkdownPlugin)
-                .markdown.deserialize(parsed.content);
+                .markdown.deserialize(contentToDeserialize);
 
-              // Apply comment marks directly into the value before editor mounts
+              // Strip ephemeral markers and apply comment marks
               if (discussionState) {
-                applyCommentMarksBySelector(
-                  nodes,
-                  discussionState.discussions,
-                  discussionState.selectorMap,
-                );
+                stripMarkersAndApplyComments(nodes);
               }
 
               return nodes;
@@ -890,43 +821,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     };
   }, [filePath, isExternal]);
 
-  // --- resolve absolute file path for diff store lookups ---
-  useEffect(() => {
-    if (!filePath) {
-      setAbsoluteFilePath(null);
-      return;
-    }
-    if (isExternal) {
-      setAbsoluteFilePath(filePath);
-    } else {
-      getBaseDir().then((baseDir) => {
-        setAbsoluteFilePath(`${baseDir}/${filePath}`);
-      });
-    }
-  }, [filePath, isExternal]);
-
-  // --- subscribe to diff store for pending diffs on this file ---
-  useEffect(() => {
-    if (!absoluteFilePath || !filePath?.endsWith(".md")) return;
-
-    const unsubscribe = useDiffStore.subscribe(() => {
-      const diff = useDiffStore
-        .getState()
-        .getActiveDiffForFile(absoluteFilePath);
-      if (diff && !showDiffOverlay) {
-        setShowDiffOverlay(true);
-      }
-    });
-
-    // Check on mount too
-    const diff = useDiffStore.getState().getActiveDiffForFile(absoluteFilePath);
-    if (diff) {
-      setShowDiffOverlay(true);
-    }
-
-    return unsubscribe;
-  }, [absoluteFilePath, filePath]);
-
   // --- cleanup metadata persist timer on unmount ---
   useEffect(() => {
     return () => {
@@ -935,6 +829,106 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       }
     };
   }, []);
+
+  // --- file watcher: reload editor when file changes on disk ---
+  useEffect(() => {
+    if (!editor || !filePath || isExternal || !filePath.endsWith(".md")) return;
+
+    let unlisten: (() => void) | null = null;
+
+    const setup = async () => {
+      unlisten = await listen<{
+        fileChanges: { path: string; kind: string }[];
+        directoryChanges: string[];
+      }>(FILE_WATCHER_EVENT, async (event) => {
+        // Only process modify events for the current file
+        const match = event.payload.fileChanges.find(
+          (change) => change.path === filePath && change.kind === "modify",
+        );
+        if (!match) return;
+
+        // Guard against self-edits: skip events within 1s of a save
+        if (Date.now() - lastSaveTimestampRef.current < 1000) return;
+
+        // Guard: editor must be loaded
+        if (!initialLoadCompleteRef.current) return;
+
+        try {
+          const rawContent = await invoke<string>("read_file", {
+            path: filePath,
+          });
+          const parsed = matter(rawContent);
+
+          // Deserialize new content to Plate nodes
+          const currentDiscussions = JSON.stringify(
+            metadataRef.current.discussions ?? null,
+          );
+          const newDiscussions = JSON.stringify(
+            parsed.data.discussions ?? null,
+          );
+          const discussionsChanged = currentDiscussions !== newDiscussions;
+
+          let newNodes: any[];
+
+          if (
+            discussionsChanged &&
+            parsed.data.discussions &&
+            Array.isArray(parsed.data.discussions)
+          ) {
+            // Re-deserialize discussions with ephemeral markers
+            const discussionState = deserializeDiscussions(
+              parsed.content,
+              parsed.data.discussions,
+            );
+            newNodes = editor
+              .getApi(MarkdownPlugin)
+              .markdown.deserialize(discussionState.markedMarkdown);
+            stripMarkersAndApplyComments(newNodes);
+
+            // Update discussion plugin options
+            editor.setOption(
+              discussionPlugin,
+              "discussions",
+              discussionState.discussions,
+            );
+            editor.setOption(discussionPlugin, "users", {
+              ...editor.getOption(discussionPlugin, "users"),
+              ...discussionState.users,
+            });
+          } else {
+            newNodes = editor
+              .getApi(MarkdownPlugin)
+              .markdown.deserialize(parsed.content);
+          }
+
+          // Compare before replacing to avoid spurious undo entries
+          const currentMarkdown = editor
+            .getApi(MarkdownPlugin)
+            .markdown.serialize();
+          const newMarkdown = parsed.content;
+          if (currentMarkdown === newMarkdown && !discussionsChanged) return;
+
+          // Replace editor content in-place (preserves undo history)
+          editor.tf.replaceNodes(newNodes, { at: [], children: true });
+
+          // Update metadata and dirty tracking baseline
+          metadataRef.current = parsed.data;
+          hasOriginalFrontmatterRef.current =
+            Object.keys(parsed.data).length > 0;
+          savedUndoRef.current = lastElement(editor.history.undos) ?? null;
+          markClean(props.api.id);
+        } catch (err) {
+          console.error("file watcher reload failed:", err);
+        }
+      });
+    };
+
+    setup();
+
+    return () => {
+      if (unlisten) unlisten();
+    };
+  }, [filePath, isExternal, editor]);
 
   // --- sync active editor to workspace store ---
   useEffect(() => {
@@ -1058,31 +1052,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
       <div className="flex h-full w-full items-center justify-center">
         <Loader2 className="h-5 w-5 animate-spin text-muted-foreground/50" />
       </div>
-    );
-  }
-
-  // diff overlay
-  const activeDiff =
-    absoluteFilePath && showDiffOverlay
-      ? useDiffStore.getState().getActiveDiffForFile(absoluteFilePath)
-      : null;
-
-  if (activeDiff && showDiffOverlay) {
-    return (
-      <DiffOverlay
-        oldText={activeDiff.oldText}
-        newText={activeDiff.newText}
-        filePath={activeDiff.path}
-        sessionId={activeDiff.sessionId}
-        onDismiss={() => {
-          setShowDiffOverlay(false);
-          // Reload the file content after diff resolution
-          if (filePath) {
-            setIsLoading(true);
-            setEditor(null);
-          }
-        }}
-      />
     );
   }
 

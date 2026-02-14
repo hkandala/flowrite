@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronRight } from "lucide-react";
+import { ChevronRight, Maximize2 } from "lucide-react";
 import { parseDiffFromFile } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
 import { invoke } from "@tauri-apps/api/core";
@@ -10,6 +10,7 @@ import { openFileFromAbsolutePath } from "@/lib/utils";
 import { cleanLocation, deriveLabel } from "@/lib/tool-call-label";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import type { ToolCall } from "@/store/agent-store";
+import { DiffModal } from "./diff-modal";
 
 interface ToolCallBlockProps {
   toolCall: ToolCall;
@@ -22,6 +23,7 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
 
   const [expanded, setExpanded] = useState(false);
   const [diffExpanded, setDiffExpanded] = useState(false);
+  const [modalOpen, setModalOpen] = useState(false);
 
   // Auto-expand when diff data arrives
   useEffect(() => {
@@ -150,10 +152,21 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
                   diffStyle: "unified",
                   lineDiffType: "word",
                   theme: "pierre-dark",
-                  disableFileHeader: true,
                   disableLineNumbers: true,
                   overflow: "wrap",
                 }}
+                renderHeaderMetadata={() => (
+                  <button
+                    type="button"
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      setModalOpen(true);
+                    }}
+                    className="flex items-center justify-center p-0.5 rounded hover:bg-white/10 transition-colors"
+                  >
+                    <Maximize2 className="size-3" />
+                  </button>
+                )}
               />
             </div>
           )}
@@ -163,6 +176,13 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
             </pre>
           )}
         </div>
+      )}
+      {modalOpen && toolCall.diffData && (
+        <DiffModal
+          diffData={toolCall.diffData}
+          open={modalOpen}
+          onOpenChange={setModalOpen}
+        />
       )}
     </div>
   );
