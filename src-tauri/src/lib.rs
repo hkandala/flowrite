@@ -167,7 +167,40 @@ const SAVE_ALL_MENU_ID: &str = "save-all";
 const NEW_FILE_MENU_ID: &str = "new-file";
 const OPEN_FILE_MENU_ID: &str = "open-file";
 
+/// Resolve the user's shell PATH so that child processes spawned from the
+/// production .app bundle can find commands like `npx`, `node`, `opencode`, etc.
+/// When launched from Finder/Dock, macOS does not load the user's shell profile,
+/// leaving PATH as a minimal `/usr/bin:/bin:/usr/sbin:/sbin`.
+#[allow(deprecated)] // std::env::set_var is safe here during single-threaded setup
+fn load_shell_path() {
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
+    match std::process::Command::new(&shell)
+        .args(["-ilc", "printf '%s' \"$PATH\""])
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            let path = String::from_utf8_lossy(&output.stdout);
+            if !path.is_empty() {
+                log::info!("resolved shell PATH from {shell}");
+                std::env::set_var("PATH", path.as_ref());
+            }
+        }
+        Ok(output) => {
+            log::warn!(
+                "failed to resolve PATH from {shell}: exit {}",
+                output.status
+            );
+        }
+        Err(err) => {
+            log::warn!("failed to run {shell} for PATH resolution: {err}");
+        }
+    }
+}
+
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
+    // resolve shell PATH for production builds (no-op when launched from terminal)
+    load_shell_path();
+
     // create custom menu
     setup_app_menu(app)?;
 

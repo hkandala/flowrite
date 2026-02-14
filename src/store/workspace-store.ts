@@ -65,6 +65,7 @@ interface WorkspaceState {
   rightPanelTab: "chat" | "comments";
   activeCommentId: string | null;
   showNewDocComment: boolean;
+  commentCount: number;
 }
 
 interface WorkspaceActions {
@@ -91,6 +92,7 @@ interface WorkspaceActions {
   openCommentInPanel: (commentId: string) => void;
   openNewDocComment: () => void;
   setShowNewDocComment: (show: boolean) => void;
+  setCommentCount: (count: number) => void;
 
   // dirty tracking
   markDirty: (panelId: string) => void;
@@ -140,6 +142,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   rightPanelTab: "chat",
   activeCommentId: null,
   showNewDocComment: false,
+  commentCount: 0,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -195,6 +198,8 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
     }),
 
   setShowNewDocComment: (show) => set({ showNewDocComment: show }),
+
+  setCommentCount: (count) => set({ commentCount: count }),
 
   // --- dirty tracking ---
 

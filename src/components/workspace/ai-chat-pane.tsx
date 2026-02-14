@@ -1,5 +1,5 @@
 import { ChevronDown, KeyRound, Sparkles, TriangleAlert } from "lucide-react";
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -19,6 +19,7 @@ import type { ConnectionError } from "@/store/agent-store";
 import { useAgentStore } from "@/store/agent-store";
 
 import { ChatHeader } from "./chat/chat-header";
+import { AgentSettingsModal } from "./chat/agent-settings-modal";
 import { ChatInput } from "./chat/chat-input";
 import { ChatMessage } from "./chat/chat-message";
 import { PermissionDialog } from "./chat/permission-dialog";
@@ -90,6 +91,7 @@ function AgentSelectionView() {
   const connect = useAgentStore((s) => s.connect);
   const lastSelectedAgentId = useAgentStore((s) => s.lastSelectedAgentId);
   const setLastSelectedAgent = useAgentStore((s) => s.setLastSelectedAgent);
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const configuredAgents = useMemo(
     () => agents.filter((agent) => agent.commandConfigured),
@@ -166,6 +168,19 @@ function AgentSelectionView() {
         >
           start session
         </Button>
+
+        <Button
+          type="button"
+          variant="ghost"
+          className="mt-1 w-full text-xs text-muted-foreground"
+          onClick={() => setSettingsOpen(true)}
+        >
+          configure acp agents
+        </Button>
+        <AgentSettingsModal
+          open={settingsOpen}
+          onOpenChange={setSettingsOpen}
+        />
       </div>
     </div>
   );

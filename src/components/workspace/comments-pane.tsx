@@ -22,6 +22,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 
 export function CommentsPane() {
   const activeEditor = useWorkspaceStore((s) => s.activeEditor);
+  const setCommentCount = useWorkspaceStore((s) => s.setCommentCount);
+
+  React.useEffect(() => {
+    if (!activeEditor) setCommentCount(0);
+  }, [activeEditor, setCommentCount]);
 
   if (!activeEditor) {
     return (
@@ -46,6 +51,7 @@ function CommentsList() {
   const discussions = usePluginOption(discussionPlugin, "discussions");
   const activeCommentId = useWorkspaceStore((s) => s.activeCommentId);
   const setActiveCommentId = useWorkspaceStore((s) => s.setActiveCommentId);
+  const setCommentCount = useWorkspaceStore((s) => s.setCommentCount);
 
   const isDraft = activeCommentId === getDraftCommentKey();
 
@@ -98,6 +104,10 @@ function CommentsList() {
       return new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime();
     });
   }, [discussions, editor]);
+
+  React.useEffect(() => {
+    setCommentCount(activeDiscussions.length);
+  }, [activeDiscussions, setCommentCount]);
 
   const activeRef = React.useRef<HTMLDivElement>(null);
   const [showDocComment, setShowDocComment] = React.useState(false);
