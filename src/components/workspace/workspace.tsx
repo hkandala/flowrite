@@ -34,6 +34,9 @@ function Workspace() {
   const openExternalFile = useWorkspaceStore((s) => s.openExternalFile);
   const closeTab = useWorkspaceStore((s) => s.closeTab);
   const hasDirtyPanels = useWorkspaceStore((s) => s.hasDirtyPanels);
+  const setCommandPaletteOpen = useWorkspaceStore(
+    (s) => s.setCommandPaletteOpen,
+  );
   const requestSaveConfirmation = useWorkspaceStore(
     (s) => s.requestSaveConfirmation,
   );
@@ -141,6 +144,17 @@ function Workspace() {
     },
     HOTKEY_OPTIONS,
     [handleOpenFile],
+  );
+
+  // Cmd+P — command palette
+  useHotkeys(
+    "mod+p",
+    (e) => {
+      if (e.repeat) return;
+      setCommandPaletteOpen(true);
+    },
+    HOTKEY_OPTIONS,
+    [setCommandPaletteOpen],
   );
 
   // Cmd+W — close active tab

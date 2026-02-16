@@ -17,7 +17,11 @@ export function AskAiToolbarButton() {
         );
       }}
       data-plate-prevent-overlay
-      tooltip={<>ask ai <Kbd>⌘L</Kbd></>}
+      tooltip={
+        <>
+          ask ai <Kbd>⌘L</Kbd>
+        </>
+      }
     >
       <SparklesIcon />
     </ToolbarButton>

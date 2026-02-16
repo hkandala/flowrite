@@ -3,16 +3,17 @@ import {
   useEffect,
   useLayoutEffect,
   useRef,
+  useState,
   type MouseEvent as ReactMouseEvent,
 } from "react";
 import { useHotkeys } from "react-hotkeys-hook";
 import {
+  Keyboard,
   PanelLeft,
   PanelLeftDashed,
   PanelRight,
   PanelRightDashed,
   Plus,
-  Settings,
   SquarePen,
   TextCursor,
   Upload,
@@ -52,6 +53,8 @@ import { EditorPane } from "./editor-pane";
 import { EditorTab } from "./editor-tab";
 import { SaveConfirmationDialog } from "./save-confirmation-dialog";
 import { QuitConfirmationDialog } from "./quit-confirmation-dialog";
+import { CommandPalette } from "./command-palette";
+import { ShortcutsModal } from "./shortcuts-modal";
 import { unregisterEditor } from "@/store/workspace-store";
 
 const customTheme: DockviewTheme = {
@@ -202,6 +205,8 @@ export function WorkspaceLayout() {
     setActiveFilePath,
   } = useWorkspaceStore();
 
+  const [shortcutsOpen, setShortcutsOpen] = useState(false);
+
   const dockviewRef = useRef<HTMLDivElement>(null);
 
   const onReady = useCallback(
@@ -335,6 +340,18 @@ export function WorkspaceLayout() {
     [toggleRightPanel],
   );
 
+  // ⌘/ → open keyboard shortcuts
+  useHotkeys(
+    "mod+slash",
+    () => setShortcutsOpen(true),
+    {
+      enableOnContentEditable: true,
+      enableOnFormTags: true as const,
+      preventDefault: true,
+    },
+    [setShortcutsOpen],
+  );
+
   return (
     <div className="h-full w-full flex flex-col relative">
       {/* drag region strip when header is hidden in maximized mode –
@@ -398,15 +415,18 @@ export function WorkspaceLayout() {
               </TooltipContent>
             </Tooltip>
 
-            {/* settings */}
+            {/* keyboard shortcuts */}
             <Tooltip>
               <TooltipTrigger asChild>
-                <button className="h-7 w-7 flex items-center justify-center rounded-md text-foreground/70 transition-colors hover:bg-foreground/8">
-                  <Settings className="h-3.5 w-3.5" />
+                <button
+                  className="h-7 w-7 flex items-center justify-center rounded-md text-foreground/70 transition-colors hover:bg-foreground/8"
+                  onClick={() => setShortcutsOpen(true)}
+                >
+                  <Keyboard className="h-3.5 w-3.5" />
                 </button>
               </TooltipTrigger>
               <TooltipContent side="bottom" sideOffset={4}>
-                settings
+                keyboard shortcuts <Kbd>⌘/</Kbd>
               </TooltipContent>
             </Tooltip>
           </div>
@@ -522,6 +542,12 @@ export function WorkspaceLayout() {
 
       {/* quit confirmation dialog */}
       <QuitConfirmationDialog />
+
+      {/* command palette */}
+      <CommandPalette />
+
+      {/* keyboard shortcuts modal */}
+      <ShortcutsModal open={shortcutsOpen} onOpenChange={setShortcutsOpen} />
     </div>
   );
 }

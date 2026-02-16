@@ -20,7 +20,11 @@ export function LinkToolbarButton(
       {...props}
       {...buttonProps}
       data-plate-focus
-      tooltip={<>link <Kbd>⌘K</Kbd></>}
+      tooltip={
+        <>
+          link <Kbd>⌘K</Kbd>
+        </>
+      }
     >
       <Link />
     </ToolbarButton>

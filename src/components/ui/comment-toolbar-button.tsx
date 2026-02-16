@@ -15,7 +15,11 @@ export function CommentToolbarButton() {
         editor.getTransforms(commentPlugin).comment.setDraft();
       }}
       data-plate-prevent-overlay
-      tooltip={<>comment <Kbd>⌘D</Kbd></>}
+      tooltip={
+        <>
+          comment <Kbd>⌘D</Kbd>
+        </>
+      }
     >
       <MessageSquareTextIcon />
     </ToolbarButton>

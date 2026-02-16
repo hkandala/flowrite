@@ -66,6 +66,7 @@ interface WorkspaceState {
   activeCommentId: string | null;
   showNewDocComment: boolean;
   commentCount: number;
+  commandPaletteOpen: boolean;
 }
 
 interface WorkspaceActions {
@@ -93,6 +94,9 @@ interface WorkspaceActions {
   openNewDocComment: () => void;
   setShowNewDocComment: (show: boolean) => void;
   setCommentCount: (count: number) => void;
+
+  // command palette
+  setCommandPaletteOpen: (open: boolean) => void;
 
   // dirty tracking
   markDirty: (panelId: string) => void;
@@ -143,6 +147,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   activeCommentId: null,
   showNewDocComment: false,
   commentCount: 0,
+  commandPaletteOpen: false,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -200,6 +205,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   setShowNewDocComment: (show) => set({ showNewDocComment: show }),
 
   setCommentCount: (count) => set({ commentCount: count }),
+
+  // --- command palette ---
+
+  setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
 
   // --- dirty tracking ---
 

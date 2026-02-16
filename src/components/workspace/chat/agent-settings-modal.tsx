@@ -115,9 +115,7 @@ export function AgentSettingsModal({
       <DialogContent className="max-w-3xl h-[85vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-2">
           <DialogTitle>ai agent providers</DialogTitle>
-          <DialogDescription>
-            configure or add your AI agents
-          </DialogDescription>
+          <DialogDescription>configure or add your AI agents</DialogDescription>
         </DialogHeader>
 
         <div className="flex-1 min-h-0 px-6 pb-6 overflow-y-auto space-y-5">
