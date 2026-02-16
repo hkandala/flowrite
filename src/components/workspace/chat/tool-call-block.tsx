@@ -16,6 +16,16 @@ interface ToolCallBlockProps {
   toolCall: ToolCall;
 }
 
+const formatToolDuration = (startedAt: number): string => {
+  const seconds = Math.round((Date.now() - startedAt) / 1000);
+  if (seconds >= 60) {
+    const m = Math.floor(seconds / 60);
+    const s = seconds % 60;
+    return `${m}m ${s}s`;
+  }
+  return `${seconds}s`;
+};
+
 export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
   const hasDiff =
     toolCall.diffData?.newText != null &&
@@ -69,7 +79,14 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
     }
   }, [hasDiff, toolCall.diffData]);
 
-  const label = subject ? `${verb} ${subject}` : verb;
+  const label = useMemo(() => {
+    const base = subject ? `${verb} ${subject}` : verb;
+    if (toolCall.kind === "think" && !isActive) {
+      const duration = formatToolDuration(toolCall.startedAt);
+      return subject ? `${verb} for ${duration} · ${subject}` : `${verb} for ${duration}`;
+    }
+    return base;
+  }, [verb, subject, toolCall.kind, toolCall.startedAt, isActive]);
 
   return (
     <div className="px-1.5">

@@ -82,6 +82,7 @@ export interface ToolCall {
   title: string;
   kind: string;
   status: ToolCallStatus;
+  startedAt: number;
   content?: string;
   locations?: string[];
   diffData?: DiffData;
@@ -1013,6 +1014,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
                   title: event.data.title || existing?.title || "tool",
                   kind: event.data.kind || existing?.kind || "other",
                   status: normalizeToolStatus(event.data.status),
+                  startedAt: existing?.startedAt ?? Date.now(),
                   content: event.data.content ?? existing?.content,
                   locations: event.data.locations ?? existing?.locations,
                   diffData: event.data.diffData ?? existing?.diffData,

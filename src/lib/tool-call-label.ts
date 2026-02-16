@@ -79,6 +79,25 @@ const COMMAND_NAMES = new Set([
 /** Strip wrapping literal quotes from a title: `"foo"` -> `foo` */
 const stripQuotes = (s: string): string => s.replace(/^"(.*)"$/, "$1");
 
+/**
+ * Extract the glob/grep pattern from structured search titles like:
+ *   "Find `/path/to/dir` `**\/*.tsx`" → "**\/*.tsx"
+ *   "grep | head -25 \"pattern\"" → "pattern"
+ */
+const extractSearchPattern = (title: string): string | null => {
+  // Glob-style: "find `path` `pattern`"
+  const globMatch = title.match(/`([^`]*\*[^`]*)`\s*$/);
+  if (globMatch) return globMatch[1];
+
+  // Grep-style: 'grep ... "pattern"' or "grep ... \"pattern\""
+  const grepMatch = title.match(
+    /^(?:grep|rg|ag)\b.*?(?:\\?"([^"\\]+)\\?"|'([^']+)')/,
+  );
+  if (grepMatch) return grepMatch[1] || grepMatch[2];
+
+  return null;
+};
+
 /** Extract just the domain from a URL string, stripping www. prefix */
 const extractDomain = (url: string): string | null => {
   try {
@@ -124,6 +143,9 @@ export const deriveLabel = (
         const execVerb = getVerb("execute", toolCall.status, tense);
         return { verb: execVerb, subject: title };
       }
+      // Extract pattern from structured titles like "Find `path` `**/*.tsx`"
+      const pattern = extractSearchPattern(title);
+      if (pattern) return { verb, subject: pattern };
       const query = !isGeneric && title ? title : null;
       return { verb, subject: query };
     }
@@ -143,8 +165,10 @@ export const deriveLabel = (
       }
       return { verb, subject: null };
     }
-    case "think":
-      return { verb, subject: null };
+    case "think": {
+      const desc = !isGeneric && title ? title : null;
+      return { verb, subject: desc };
+    }
     case "move": {
       const file = fileName || (!isGeneric && title) || "file";
       return { verb, subject: file };

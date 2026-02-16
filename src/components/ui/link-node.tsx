@@ -1,11 +1,12 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
-
 import { AnchorHTMLAttributes, MouseEvent, useEffect, useState } from "react";
 import type { TLinkElement } from "platejs";
 import type { PlateElementProps } from "platejs/react";
 
 import { getLinkAttributes } from "@platejs/link";
 import { PlateElement } from "platejs/react";
+
+import { useWorkspaceStore } from "@/store/workspace-store";
+import { handleLinkNavigation } from "@/lib/utils";
 
 export function LinkElement(props: PlateElementProps<TLinkElement>) {
   const [cursorState, setCursorState] = useState<string>("default");
@@ -31,7 +32,9 @@ export function LinkElement(props: PlateElementProps<TLinkElement>) {
       return;
     }
 
-    openUrl(href);
+    const { activeFilePath, openFile, openExternalFile } =
+      useWorkspaceStore.getState();
+    handleLinkNavigation(href, activeFilePath, openFile, openExternalFile);
   };
 
   useEffect(() => {

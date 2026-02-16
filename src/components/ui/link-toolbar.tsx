@@ -1,5 +1,3 @@
-import { openUrl } from "@tauri-apps/plugin-opener";
-
 import * as React from "react";
 
 import type { TLinkElement } from "platejs";
@@ -30,6 +28,8 @@ import {
 
 import { buttonVariants } from "@/components/ui/button";
 import { Separator } from "@/components/ui/separator";
+import { useWorkspaceStore } from "@/store/workspace-store";
+import { handleLinkNavigation } from "@/lib/utils";
 
 const popoverVariants = cva(
   "z-50 w-auto rounded-md border bg-popover p-1 text-popover-foreground shadow-md outline-hidden",
@@ -214,7 +214,11 @@ function LinkOpenButton() {
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        openUrl(attributes.href as string);
+        const href = attributes.href as string;
+        if (!href) return;
+        const { activeFilePath, openFile, openExternalFile } =
+          useWorkspaceStore.getState();
+        handleLinkNavigation(href, activeFilePath, openFile, openExternalFile);
       }}
       aria-label="Open link in a new tab"
       target="_blank"
