@@ -12,8 +12,8 @@ use tokio::fs;
 
 use crate::{
     constants::{
-        WORKSPACE_WINDOW_HEIGHT, WORKSPACE_WINDOW_LABEL_PREFIX, WORKSPACE_WINDOW_MIN_HEIGHT,
-        WORKSPACE_WINDOW_MIN_WIDTH, WORKSPACE_WINDOW_WIDTH,
+        SYSTEM_PROMPT_FILE_NAME, WORKSPACE_WINDOW_HEIGHT, WORKSPACE_WINDOW_LABEL_PREFIX,
+        WORKSPACE_WINDOW_MIN_HEIGHT, WORKSPACE_WINDOW_MIN_WIDTH, WORKSPACE_WINDOW_WIDTH,
     },
     nb,
     utils::resolve_path,
@@ -503,4 +503,57 @@ pub async fn rename_external_file(old_path: String, new_path: String) -> Result<
     log::info!("renamed external file: {old_path} -> {new_path}");
 
     Ok(())
+}
+
+// -----------------------------------------
+// system prompt
+// -----------------------------------------
+
+/// Reads the system prompt from the app data directory.
+/// On first call (or if the file is missing), copies the bundled
+/// resource to the app data directory so users can customize it.
+#[tauri::command]
+pub async fn read_system_prompt(app_handle: AppHandle) -> Result<String, String> {
+    let data_dir = app_handle
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("failed to resolve app data dir: {e}"))?;
+
+    let user_prompt_path = data_dir.join(SYSTEM_PROMPT_FILE_NAME);
+
+    // If the user-customizable copy doesn't exist, seed it from the bundled resource
+    if !user_prompt_path.exists() {
+        let resource_path = app_handle
+            .path()
+            .resource_dir()
+            .map_err(|e| format!("failed to resolve resource dir: {e}"))?
+            .join("resources")
+            .join(SYSTEM_PROMPT_FILE_NAME);
+
+        let bundled_content = fs::read_to_string(&resource_path)
+            .await
+            .map_err(|e| format!("failed to read bundled system prompt: {e}"))?;
+
+        // Ensure data directory exists
+        fs::create_dir_all(&data_dir)
+            .await
+            .map_err(|e| format!("failed to create app data dir: {e}"))?;
+
+        fs::write(&user_prompt_path, &bundled_content)
+            .await
+            .map_err(|e| format!("failed to write system prompt to app data dir: {e}"))?;
+
+        log::info!(
+            "copied bundled system prompt to {}",
+            user_prompt_path.display()
+        );
+
+        return Ok(bundled_content);
+    }
+
+    let content = fs::read_to_string(&user_prompt_path)
+        .await
+        .map_err(|e| format!("failed to read system prompt: {e}"))?;
+
+    Ok(content)
 }

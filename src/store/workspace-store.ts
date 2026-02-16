@@ -67,6 +67,7 @@ interface WorkspaceState {
   showNewDocComment: boolean;
   commentCount: number;
   commandPaletteOpen: boolean;
+  firstInstallPending: boolean;
 }
 
 interface WorkspaceActions {
@@ -97,6 +98,9 @@ interface WorkspaceActions {
 
   // command palette
   setCommandPaletteOpen: (open: boolean) => void;
+
+  // first install
+  setFirstInstallPending: (pending: boolean) => void;
 
   // dirty tracking
   markDirty: (panelId: string) => void;
@@ -148,6 +152,7 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   showNewDocComment: false,
   commentCount: 0,
   commandPaletteOpen: false,
+  firstInstallPending: false,
 
   setDockviewApi: (api) => set({ dockviewApi: api }),
 
@@ -209,6 +214,10 @@ export const useWorkspaceStore = create<WorkspaceStore>((set, get) => ({
   // --- command palette ---
 
   setCommandPaletteOpen: (open) => set({ commandPaletteOpen: open }),
+
+  // --- first install ---
+
+  setFirstInstallPending: (pending) => set({ firstInstallPending: pending }),
 
   // --- dirty tracking ---
 

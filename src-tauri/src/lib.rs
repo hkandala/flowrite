@@ -60,6 +60,7 @@ pub fn run() {
             command::update_external_file,
             command::delete_external_file,
             command::rename_external_file,
+            command::read_system_prompt,
             acp::acp_connect,
             acp::acp_new_session,
             acp::acp_prompt,
@@ -197,6 +198,54 @@ fn load_shell_path() {
     }
 }
 
+/// Recursively copies all files and directories from `src` to `dst`.
+async fn copy_dir_recursive(
+    src: &std::path::Path,
+    dst: &std::path::Path,
+) -> Result<(), Box<dyn std::error::Error>> {
+    tokio::fs::create_dir_all(dst).await?;
+    let mut entries = tokio::fs::read_dir(src).await?;
+    while let Some(entry) = entries.next_entry().await? {
+        let file_type = entry.file_type().await?;
+        let dest_path = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            Box::pin(copy_dir_recursive(&entry.path(), &dest_path)).await?;
+        } else {
+            tokio::fs::copy(entry.path(), &dest_path).await?;
+        }
+    }
+    Ok(())
+}
+
+/// Copies bundled docs from the resource directory to ~/flowrite/docs/.
+async fn copy_bundled_docs(
+    app_handle: &tauri::AppHandle,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let resource_docs = app_handle
+        .path()
+        .resource_dir()
+        .map_err(|e| format!("failed to resolve resource dir: {e}"))?
+        .join("resources")
+        .join("docs");
+
+    let dest_docs = utils::get_base_dir(app_handle)
+        .map_err(|e| format!("failed to resolve base dir: {e}"))?
+        .join("docs");
+
+    if !resource_docs.exists() {
+        log::warn!(
+            "bundled docs not found at {}, skipping copy",
+            resource_docs.display()
+        );
+        return Ok(());
+    }
+
+    copy_dir_recursive(&resource_docs, &dest_docs).await?;
+    log::info!("copied bundled docs to {}", dest_docs.display());
+
+    Ok(())
+}
+
 fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
     // resolve shell PATH for production builds (no-op when launched from terminal)
     load_shell_path();
@@ -210,6 +259,24 @@ fn setup_app(app: &mut tauri::App) -> Result<(), Box<dyn std::error::Error>> {
         nb::init_nb(&init_handle).await?;
         Ok::<(), Box<dyn std::error::Error>>(())
     })?;
+
+    // copy bundled docs on first install (blocking - must complete before frontend)
+    {
+        use tauri_plugin_store::StoreExt;
+        let store = app
+            .handle()
+            .store("settings.json")
+            .map_err(|e| format!("failed to open settings store: {e}"))?;
+        let done = store
+            .get("first-install-done")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(false);
+
+        if !done {
+            let handle = app.handle().clone();
+            tauri::async_runtime::block_on(async move { copy_bundled_docs(&handle).await })?;
+        }
+    }
 
     // initialize file watcher
     file_watcher::init_file_watcher(app.handle().clone());

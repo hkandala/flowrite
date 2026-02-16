@@ -782,6 +782,24 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     const discussions = editor.getOption(discussionPlugin, "discussions");
     const commentApi = editor.getApi(CommentPlugin).comment;
 
+    // Direct tree scan: collect all comment mark keys present in the tree
+    const markKeysInTree = new Set<string>();
+    const scanTree = (node: any) => {
+      if (node.text !== undefined) {
+        for (const k of Object.keys(node)) {
+          if (
+            k.startsWith("comment_") &&
+            k !== "comment_draft" &&
+            k !== "comment"
+          ) {
+            markKeysInTree.add(k);
+          }
+        }
+      }
+      if (node.children) node.children.forEach(scanTree);
+    };
+    editor.children.forEach(scanTree);
+
     const orphanIds: string[] = [];
     const restoredIds: string[] = [];
 
@@ -802,6 +820,22 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
     }
 
     if (orphanIds.length === 0 && restoredIds.length === 0) return;
+
+    // Guard against false orphans from ID desync: if the tree has comment marks
+    // but they don't correspond to any known discussion, it means the tree was
+    // regenerated with new IDs (e.g., from file watcher reload) and the plugin
+    // hasn't synced yet. Skip cleanup to avoid incorrectly resolving discussions.
+    if (orphanIds.length > 0 && markKeysInTree.size > 0) {
+      const discussionKeySet = new Set(
+        discussions.map((d: TDiscussion) => `comment_${d.id}`),
+      );
+      const hasUnmatchedTreeMarks = [...markKeysInTree].some(
+        (k) => !discussionKeySet.has(k),
+      );
+      if (hasUnmatchedTreeMarks) {
+        return;
+      }
+    }
 
     for (const id of orphanIds) {
       autoResolvedIdsRef.current.add(id);
@@ -1044,7 +1078,6 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
           let newNodes: any[];
 
           if (
-            discussionsChanged &&
             parsed.data.discussions &&
             Array.isArray(parsed.data.discussions)
           ) {
@@ -1058,7 +1091,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
               .markdown.deserialize(discussionState.markedMarkdown);
             stripMarkersAndApplyComments(newNodes);
 
-            // Update discussion plugin options
+            // Update discussion plugin options to match re-generated IDs
             editor.setOption(
               discussionPlugin,
               "discussions",

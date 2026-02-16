@@ -14,3 +14,6 @@ pub const WORKSPACE_WINDOW_MIN_HEIGHT: f64 = 480.0;
 
 // global events
 pub const FILE_WATCHER_EVENT: &str = "file-watcher";
+
+// system prompt
+pub const SYSTEM_PROMPT_FILE_NAME: &str = "system-prompt.md";

@@ -7,6 +7,7 @@ import {
   THEME_STORAGE_KEY,
   SETTINGS_STORE_PATH,
   THEME_UPDATED_EVENT,
+  FIRST_INSTALL_DONE_KEY,
 } from "@/lib/constants";
 
 export { THEME_UPDATED_EVENT };
@@ -29,6 +30,8 @@ interface Actions {
   initTheme: () => Promise<void>;
   setTheme: (theme: Theme, broadcast?: boolean) => void;
   toggleTheme: () => void;
+  checkFirstInstall: () => Promise<boolean>;
+  markFirstInstallDone: () => Promise<void>;
 }
 
 type AppStore = State & Actions;
@@ -73,5 +76,25 @@ export const useAppStore = create<AppStore>((set, get) => ({
     const currentTheme = get().theme;
     const newTheme: Theme = currentTheme === "dark" ? "light" : "dark";
     get().setTheme(newTheme);
+  },
+
+  checkFirstInstall: async () => {
+    try {
+      const store = await getSettingsStore();
+      const done = await store.get<boolean>(FIRST_INSTALL_DONE_KEY);
+      return !done;
+    } catch {
+      return false;
+    }
+  },
+
+  markFirstInstallDone: async () => {
+    try {
+      const store = await getSettingsStore();
+      await store.set(FIRST_INSTALL_DONE_KEY, true);
+      await store.save();
+    } catch (e) {
+      console.error("failed to mark first install done:", e);
+    }
   },
 }));

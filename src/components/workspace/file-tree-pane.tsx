@@ -244,6 +244,10 @@ export function FileTreePane() {
   const closeFile = useWorkspaceStore((s) => s.closeFile);
   const renameFile = useWorkspaceStore((s) => s.renameFile);
   const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
+  const firstInstallPending = useWorkspaceStore((s) => s.firstInstallPending);
+  const setFirstInstallPending = useWorkspaceStore(
+    (s) => s.setFirstInstallPending,
+  );
 
   // item metadata cache (name, isDir) — used by fetchItem, context menus, filter
   // headless-tree manages its own children cache internally; we don't duplicate it
@@ -661,6 +665,23 @@ export function FileTreePane() {
     initialFocusDoneRef.current = true;
     ensureTreeHasFocusedItem();
   }, [visibleItems.length, ensureTreeHasFocusedItem]);
+
+  // auto-expand docs directories on first install
+  useEffect(() => {
+    if (!firstInstallPending || !rootLoaded) return;
+    setState((prev) => ({
+      ...prev,
+      expandedItems: [
+        ...new Set([
+          ...(prev.expandedItems ?? []),
+          "docs",
+          "docs/guides",
+          "docs/reference",
+        ]),
+      ],
+    }));
+    setFirstInstallPending(false);
+  }, [firstInstallPending, rootLoaded, setFirstInstallPending]);
 
   // ---- fetch all recursive items for expand all & filtering ----
 

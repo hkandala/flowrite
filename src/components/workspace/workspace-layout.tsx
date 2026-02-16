@@ -47,6 +47,7 @@ import {
   RIGHT_PANEL_MIN_WIDTH,
   RIGHT_PANEL_MAX_WIDTH,
 } from "@/store/workspace-store";
+import { useAppStore } from "@/store/app-store";
 import { FileTreePane } from "./file-tree-pane";
 import { RightPanel } from "./right-panel";
 import { EditorPane } from "./editor-pane";
@@ -218,14 +219,27 @@ export function WorkspaceLayout() {
       // with StrictMode and guaranteed to run after dockviewApi is set.
       invoke<string[]>("take_pending_files")
         .then(async (files) => {
-          if (files.length === 0) return;
-          const { openFile, openExternalFile } = useWorkspaceStore.getState();
-          for (const absolutePath of files) {
-            await openFileFromAbsolutePath(
-              absolutePath,
-              openFile,
-              openExternalFile,
-            );
+          if (files.length > 0) {
+            const { openFile, openExternalFile } = useWorkspaceStore.getState();
+            for (const absolutePath of files) {
+              await openFileFromAbsolutePath(
+                absolutePath,
+                openFile,
+                openExternalFile,
+              );
+            }
+          }
+
+          // after pending files, check first install
+          const { checkFirstInstall, markFirstInstallDone } =
+            useAppStore.getState();
+          const isFirstInstall = await checkFirstInstall();
+          if (isFirstInstall) {
+            const { openFile, setFirstInstallPending } =
+              useWorkspaceStore.getState();
+            openFile("docs/index.md");
+            setFirstInstallPending(true);
+            await markFirstInstallDone();
           }
         })
         .catch((e) => console.error("failed to drain pending files:", e));
@@ -297,6 +311,26 @@ export function WorkspaceLayout() {
       removeDisposable.dispose();
     };
   }, [dockviewApi, setActiveFilePath]);
+
+  // convert vertical scroll to horizontal in tab bar
+  useEffect(() => {
+    const container = dockviewRef.current;
+    if (!container) return;
+
+    const handleWheel = (e: WheelEvent) => {
+      const tabsContainer = (e.target as HTMLElement).closest(
+        ".dv-tabs-container",
+      );
+      if (!tabsContainer) return;
+      if (e.deltaY === 0) return;
+
+      e.preventDefault();
+      tabsContainer.scrollLeft += e.deltaY;
+    };
+
+    container.addEventListener("wheel", handleWheel, { passive: false });
+    return () => container.removeEventListener("wheel", handleWheel);
+  }, []);
 
   // keyboard shortcuts
 

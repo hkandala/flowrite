@@ -12,7 +12,7 @@ export function CodeLeaf(props: PlateLeafProps) {
       className={
         isEmpty
           ? ""
-          : "inline-block max-w-full wrap-break-word rounded-md border bg-muted-foreground/10 dark:bg-muted px-[0.3em] font-mono text-[0.9em] align-baseline"
+          : "rounded-md border bg-muted-foreground/10 dark:bg-muted px-[0.3em] font-mono text-[0.9em]"
       }
     >
       {props.children}

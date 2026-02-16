@@ -925,6 +925,19 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     session = get().sessions[sessionId];
     if (!session) return;
 
+    // On the first message of a session, prepend the system prompt
+    let promptText = text;
+    if (session.messages.length === 0) {
+      try {
+        const systemPrompt = await invoke<string>("read_system_prompt");
+        if (systemPrompt) {
+          promptText = `<system_prompt>\n${systemPrompt}\n</system_prompt>\n\n${text}`;
+        }
+      } catch (error) {
+        console.warn("failed to load system prompt:", error);
+      }
+    }
+
     const userMessageId = createId();
     const assistantMessageId = createId();
     const userMessage: ChatMessage = {
@@ -1113,7 +1126,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       await invoke("acp_prompt", {
         agentId: session.agentId,
         sessionId,
-        text,
+        text: promptText,
         onEvent,
       });
     } catch (error) {
