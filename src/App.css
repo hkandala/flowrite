@@ -299,12 +299,6 @@ body {
   padding: 1px;
 }
 
-/* Override use-stick-to-bottom inline scrollbarGutter: "stable both-edges" */
-.chat-scroll-container {
-  scrollbar-gutter: unset !important;
-  overflow-y: auto !important;
-}
-
 .glass-surface {
   background-color: var(--popover);
 }

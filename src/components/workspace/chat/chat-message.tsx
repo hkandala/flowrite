@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { memo, useMemo } from "react";
 
 import { createSlateEditor } from "platejs";
 import { BaseParagraphPlugin } from "platejs";
@@ -20,20 +20,26 @@ const userMessagePlugins = [
   FileReferencePlugin.withComponent(FileReferenceElementStatic),
 ];
 
-function UserMessageStatic({ editorValue }: { editorValue: any[] }) {
+const UserMessageStatic = memo(function UserMessageStatic({
+  editorValue,
+}: {
+  editorValue: any[];
+}) {
   const editor = useMemo(
     () => createSlateEditor({ plugins: userMessagePlugins }),
     [],
   );
 
   return <EditorStatic editor={editor} value={editorValue} variant="relaxed" />;
-}
+});
 
 interface ChatMessageProps {
   message: ChatMessageType;
 }
 
-export function ChatMessage({ message }: ChatMessageProps) {
+export const ChatMessage = memo(function ChatMessage({
+  message,
+}: ChatMessageProps) {
   const isUser = message.role === "user";
 
   if (isUser) {
@@ -100,4 +106,4 @@ export function ChatMessage({ message }: ChatMessageProps) {
         )}
     </div>
   );
-}
+});

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
 
 import { MarkdownPlugin, remarkMdx } from "@platejs/markdown";
 import { KEYS, createSlateEditor } from "platejs";
@@ -40,7 +40,9 @@ interface ChatMarkdownProps {
 const normalizeMarkdown = (content: string): string =>
   content.trim().replace(/\n{3,}/g, "\n\n");
 
-export function ChatMarkdown({ children }: ChatMarkdownProps) {
+export const ChatMarkdown = memo(function ChatMarkdown({
+  children,
+}: ChatMarkdownProps) {
   const editor = useMemo(() => createSlateEditor({ plugins: chatPlugins }), []);
 
   const [value, setValue] = useState(() =>
@@ -96,4 +98,4 @@ export function ChatMarkdown({ children }: ChatMarkdownProps) {
       className="space-y-2 [&_li]:my-0.5"
     />
   );
-}
+});

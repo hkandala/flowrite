@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { memo, useState } from "react";
 import { ChevronRight } from "lucide-react";
 
 import { cn } from "@/lib/utils";
@@ -19,7 +19,7 @@ const formatDuration = (startedAt: number): string => {
   return `thought for ${seconds}s`;
 };
 
-export function ThinkingBar({
+export const ThinkingBar = memo(function ThinkingBar({
   thinking,
   isStreaming,
   thinkingStartedAt,
@@ -71,4 +71,4 @@ export function ThinkingBar({
       )}
     </div>
   );
-}
+});

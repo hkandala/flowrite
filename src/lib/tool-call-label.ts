@@ -59,6 +59,7 @@ const GENERIC_TITLES = [
   "think",
   "move",
   "tool",
+  "task",
   "list",
   "undefined",
   ".",
@@ -82,20 +83,38 @@ const stripQuotes = (s: string): string => s.replace(/^"(.*)"$/, "$1");
 /**
  * Extract the glob/grep pattern from structured search titles like:
  *   "Find `/path/to/dir` `**\/*.tsx`" → "**\/*.tsx"
- *   "grep | head -25 \"pattern\"" → "pattern"
+ *   "grep \"pattern\" /path" → "pattern"
+ *   "`grep -r \"pattern\" /path`" → "pattern"
+ *   "`find /path -name \"*.ts\"`" → "*.ts"
  */
 const extractSearchPattern = (title: string): string | null => {
-  // Glob-style: "find `path` `pattern`"
-  const globMatch = title.match(/`([^`]*\*[^`]*)`\s*$/);
+  // Glob-style: "find `path` `pattern`" — two backtick pairs, extract the second
+  const globMatch = title.match(/`[^`]+`\s+`([^`]+)`\s*$/);
   if (globMatch) return globMatch[1];
 
-  // Grep-style: 'grep ... "pattern"' or "grep ... \"pattern\""
+  // Grep-style: grep/rg/ag ... "pattern" (with optional leading backtick)
   const grepMatch = title.match(
-    /^(?:grep|rg|ag)\b.*?(?:\\?"([^"\\]+)\\?"|'([^']+)')/,
+    /(?:^`?\s*)(?:grep|rg|ag)\b.*?(?:\\?"([^"\\]+)\\?"|'([^']+)')/,
   );
   if (grepMatch) return grepMatch[1] || grepMatch[2];
 
+  // find -name "pattern": extract the first -name argument
+  const findMatch = title.match(/-name\s+(?:\\?"([^"\\]+)\\?"|'([^']+)')/);
+  if (findMatch) return findMatch[1] || findMatch[2];
+
   return null;
+};
+
+/** Shell commands that are search operations (find/grep in Bash) */
+const SEARCH_COMMANDS = new Set(["find", "grep", "rg", "ag", "fd"]);
+
+/**
+ * If the execute-kind title is a backtick-wrapped command starting with
+ * a search command (find, grep, …), return the command name.
+ */
+const extractShellSearchCommand = (title: string): string | null => {
+  const m = title.match(/^`\s*(find|grep|rg|ag|fd)\b/);
+  return m && SEARCH_COMMANDS.has(m[1]) ? m[1] : null;
 };
 
 /** Extract just the domain from a URL string, stripping www. prefix */
@@ -150,6 +169,13 @@ export const deriveLabel = (
       return { verb, subject: query };
     }
     case "execute": {
+      // Shell find/grep commands should show as "searched" not "ran"
+      const shellSearch = extractShellSearchCommand(title);
+      if (shellSearch) {
+        const searchVerb = getVerb("search", toolCall.status, tense);
+        const pattern = extractSearchPattern(title);
+        return { verb: searchVerb, subject: pattern };
+      }
       const cmd = !isGeneric && title ? title : "command";
       return { verb, subject: cmd };
     }
@@ -166,8 +192,13 @@ export const deriveLabel = (
       return { verb, subject: null };
     }
     case "think": {
-      const desc = !isGeneric && title ? title : null;
-      return { verb, subject: desc };
+      if (!isGeneric && title) return { verb: title, subject: null };
+      // Generic task: "working on a task" / "worked on a task"
+      if (toolCall.status === "completed")
+        return { verb: "worked on a task", subject: null };
+      if (toolCall.status === "failed")
+        return { verb: "failed to complete task", subject: null };
+      return { verb: "working on a task", subject: null };
     }
     case "move": {
       const file = fileName || (!isGeneric && title) || "file";

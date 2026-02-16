@@ -186,16 +186,19 @@ function LinkOpenButton() {
   const editor = useEditorRef();
   const selection = useEditorSelection();
 
-  const attributes = React.useMemo(
+  const { attributes, url } = React.useMemo(
     () => {
       const entry = editor.api.node<TLinkElement>({
         match: { type: editor.getType(KEYS.link) },
       });
       if (!entry) {
-        return {};
+        return { attributes: {}, url: undefined };
       }
       const [element] = entry;
-      return getLinkAttributes(editor, element);
+      return {
+        attributes: getLinkAttributes(editor, element),
+        url: element.url,
+      };
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [editor, selection],
@@ -214,11 +217,10 @@ function LinkOpenButton() {
       onClick={(e) => {
         e.preventDefault();
         e.stopPropagation();
-        const href = attributes.href as string;
-        if (!href) return;
+        if (!url) return;
         const { activeFilePath, openFile, openExternalFile } =
           useWorkspaceStore.getState();
-        handleLinkNavigation(href, activeFilePath, openFile, openExternalFile);
+        handleLinkNavigation(url, activeFilePath, openFile, openExternalFile);
       }}
       aria-label="Open link in a new tab"
       target="_blank"

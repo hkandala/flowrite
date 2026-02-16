@@ -1,12 +1,8 @@
 import { ChevronDown, KeyRound, Sparkles, TriangleAlert } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
+import { Virtuoso, type VirtuosoHandle } from "react-virtuoso";
 
 import { Button } from "@/components/ui/button";
-import {
-  ChatContainerContent,
-  ChatContainerRoot,
-  ChatContainerScrollAnchor,
-} from "@/components/ui/chat-container";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -206,43 +202,68 @@ export function AiChatPane() {
   const pendingPermissions = session?.pendingPermissions ?? [];
   const isResponding = session?.isResponding ?? false;
 
+  const virtuosoRef = useRef<VirtuosoHandle>(null);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+
+  const scrollToBottom = useCallback(() => {
+    virtuosoRef.current?.scrollToIndex({
+      index: "LAST",
+      align: "end",
+      behavior: "smooth",
+    });
+  }, []);
+
+  const handleAtBottomStateChange = useCallback((atBottom: boolean) => {
+    setIsAtBottom(atBottom);
+  }, []);
+
   return (
     <div className="h-full flex flex-col">
       {hasActiveTab && <ChatHeader />}
 
       {!hasActiveTab ? (
         <AgentSelectionView />
-      ) : (
-        <ChatContainerRoot className="flex-1 min-h-0 py-3 pr-5 select-text">
-          <ChatContainerContent className="min-h-full space-y-3">
-            {messages.length === 0 ? (
-              <div className="flex flex-1 flex-col items-center justify-center gap-3 text-muted-foreground">
-                {connectionError ? (
-                  <ConnectionErrorDisplay error={connectionError} />
-                ) : (
-                  <>
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
-                      <Sparkles className="h-5 w-5" />
-                    </div>
-                    <span className="text-sm">
-                      {isConnecting
-                        ? "connecting to agent..."
-                        : "start a conversation"}
-                    </span>
-                  </>
-                )}
-              </div>
+      ) : messages.length === 0 ? (
+        <div className="flex-1 min-h-0 flex items-center justify-center py-3 pr-5 select-text">
+          <div className="flex flex-col items-center gap-3 text-muted-foreground">
+            {connectionError ? (
+              <ConnectionErrorDisplay error={connectionError} />
             ) : (
-              messages.map((message) => (
-                <ChatMessage key={message.id} message={message} />
-              ))
+              <>
+                <div className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8">
+                  <Sparkles className="h-5 w-5" />
+                </div>
+                <span className="text-sm">
+                  {isConnecting
+                    ? "connecting to agent..."
+                    : "start a conversation"}
+                </span>
+              </>
             )}
-            <ChatContainerScrollAnchor />
-          </ChatContainerContent>
-          <div className="absolute bottom-4 right-5">
-            <ScrollButton />
           </div>
-        </ChatContainerRoot>
+        </div>
+      ) : (
+        <div className="flex-1 min-h-0 relative py-3 pr-5 select-text">
+          <Virtuoso
+            ref={virtuosoRef}
+            data={messages}
+            followOutput="smooth"
+            atBottomStateChange={handleAtBottomStateChange}
+            atBottomThreshold={30}
+            increaseViewportBy={200}
+            itemContent={(_index, message) => (
+              <div className="pb-3">
+                <ChatMessage key={message.id} message={message} />
+              </div>
+            )}
+          />
+          <div className="absolute bottom-4 right-5">
+            <ScrollButton
+              isAtBottom={isAtBottom}
+              onScrollToBottom={scrollToBottom}
+            />
+          </div>
+        </div>
       )}
 
       {pendingPermissions.map((permission) => {

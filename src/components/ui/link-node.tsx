@@ -12,15 +12,11 @@ export function LinkElement(props: PlateElementProps<TLinkElement>) {
   const [cursorState, setCursorState] = useState<string>("default");
 
   const linkAttributes = getLinkAttributes(props.editor, props.element);
-
-  const anchorAttributes =
-    linkAttributes as AnchorHTMLAttributes<HTMLAnchorElement>;
-  const href =
-    typeof anchorAttributes.href === "string"
-      ? anchorAttributes.href
-      : undefined;
+  const url = props.element.url;
 
   const handleClick = (event: MouseEvent<HTMLAnchorElement>) => {
+    const anchorAttributes =
+      linkAttributes as AnchorHTMLAttributes<HTMLAnchorElement>;
     anchorAttributes.onClick?.(event);
 
     event.preventDefault();
@@ -28,13 +24,13 @@ export function LinkElement(props: PlateElementProps<TLinkElement>) {
 
     setCursorState("default");
 
-    if (event.button !== 0 || !href || !event.metaKey) {
+    if (event.button !== 0 || !url || !event.metaKey) {
       return;
     }
 
     const { activeFilePath, openFile, openExternalFile } =
       useWorkspaceStore.getState();
-    handleLinkNavigation(href, activeFilePath, openFile, openExternalFile);
+    handleLinkNavigation(url, activeFilePath, openFile, openExternalFile);
   };
 
   useEffect(() => {

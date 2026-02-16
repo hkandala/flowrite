@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useEffect, useMemo, useState } from "react";
 import { ChevronDown, ChevronRight, Maximize2 } from "lucide-react";
 import { parseDiffFromFile } from "@pierre/diffs";
 import { FileDiff } from "@pierre/diffs/react";
@@ -26,7 +26,9 @@ const formatToolDuration = (startedAt: number): string => {
   return `${seconds}s`;
 };
 
-export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
+export const ToolCallBlock = memo(function ToolCallBlock({
+  toolCall,
+}: ToolCallBlockProps) {
   const hasDiff =
     toolCall.diffData?.newText != null &&
     (toolCall.kind === "edit" || toolCall.kind === "read");
@@ -83,7 +85,7 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
     const base = subject ? `${verb} ${subject}` : verb;
     if (toolCall.kind === "think" && !isActive) {
       const duration = formatToolDuration(toolCall.startedAt);
-      return subject ? `${verb} for ${duration} · ${subject}` : `${verb} for ${duration}`;
+      return `${base} · ${duration}`;
     }
     return base;
   }, [verb, subject, toolCall.kind, toolCall.startedAt, isActive]);
@@ -220,4 +222,4 @@ export function ToolCallBlock({ toolCall }: ToolCallBlockProps) {
       )}
     </div>
   );
-}
+});

@@ -1,3 +1,4 @@
+import { memo } from "react";
 import { Check, Circle, CircleDot } from "lucide-react";
 
 import type { PlanEntry } from "@/store/agent-store";
@@ -17,7 +18,7 @@ const statusIcon = (status: PlanEntry["status"]) => {
   }
 };
 
-export function PlanBlock({ entries }: PlanBlockProps) {
+export const PlanBlock = memo(function PlanBlock({ entries }: PlanBlockProps) {
   if (entries.length === 0) return null;
 
   return (
@@ -33,4 +34,4 @@ export function PlanBlock({ entries }: PlanBlockProps) {
       ))}
     </div>
   );
-}
+});
