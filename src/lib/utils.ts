@@ -7,6 +7,12 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs));
 }
 
+/** Check if a file path points to a Claude plan document (~/.claude/plans/*.md). */
+export function isClaudePlanFile(filePath: string | null): boolean {
+  if (!filePath) return false;
+  return /\/.claude\/plans\/[^/]+$/.test(filePath);
+}
+
 let cachedBaseDir: string | null = null;
 
 export async function getBaseDir(): Promise<string> {

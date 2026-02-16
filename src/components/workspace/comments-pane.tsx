@@ -2,7 +2,13 @@ import * as React from "react";
 
 import { getDraftCommentKey } from "@platejs/comment";
 import { CommentPlugin } from "@platejs/comment/react";
-import { MessageSquarePlus, MessageSquareText, Plus } from "lucide-react";
+import {
+  ClipboardCopy,
+  MessageSquarePlus,
+  MessageSquareText,
+  Plus,
+} from "lucide-react";
+import { toast } from "sonner";
 import { HistoryApi } from "platejs";
 import { Plate, useEditorRef, usePluginOption } from "platejs/react";
 
@@ -16,6 +22,7 @@ import {
   generateDiscussionId,
 } from "@/components/editor/plugins/discussion-kit";
 import { commentPlugin } from "@/components/editor/plugins/comment-kit";
+import { isClaudePlanFile } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import { Comment, CommentCreateForm } from "@/components/ui/comment";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -46,12 +53,38 @@ export function CommentsPane() {
   );
 }
 
+const CLAUDE_PLAN_PROMPT = `I have added my review comments in YAML frontmatter. Each discussion has a \`selector\` (W3C TextQuoteSelector with \`exact\`/\`prefix\`/\`suffix\`) identifying the commented text, and a \`comments\` array with feedback. Update the plan based on all comments, then remove the entire frontmatter section.`;
+
+function PlanCommentsBanner() {
+  const handleCopy = React.useCallback(() => {
+    navigator.clipboard.writeText(CLAUDE_PLAN_PROMPT);
+    toast.success("Prompt copied to clipboard");
+  }, []);
+
+  return (
+    <div className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-foreground/3 px-3 py-2.5 text-xs text-muted-foreground">
+      <span>
+        Add your comments with <kbd className="rounded border px-1 py-0.5 text-[10px] font-mono bg-foreground/5">⌘D</kbd>, then copy the prompt for Claude Code.
+      </span>
+      <button
+        onClick={handleCopy}
+        className="flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-foreground/70 hover:bg-foreground/8 hover:text-foreground transition-colors cursor-pointer"
+      >
+        <ClipboardCopy className="h-3 w-3" />
+        Copy prompt
+      </button>
+    </div>
+  );
+}
+
 function CommentsList() {
   const editor = useEditorRef();
   const discussions = usePluginOption(discussionPlugin, "discussions");
   const activeCommentId = useWorkspaceStore((s) => s.activeCommentId);
   const setActiveCommentId = useWorkspaceStore((s) => s.setActiveCommentId);
   const setCommentCount = useWorkspaceStore((s) => s.setCommentCount);
+  const activeFilePath = useWorkspaceStore((s) => s.activeFilePath);
+  const isClaudePlan = isClaudePlanFile(activeFilePath);
 
   const isDraft = activeCommentId === getDraftCommentKey();
 
@@ -174,6 +207,11 @@ function CommentsList() {
   if (activeDiscussions.length === 0 && !isDraft && !showDocComment) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-5 text-muted-foreground p-3">
+        {isClaudePlan && (
+          <div className="absolute top-3 left-0 right-0 pr-6">
+            <PlanCommentsBanner />
+          </div>
+        )}
         <button
           onClick={() => setShowDocComment(true)}
           className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8 text-muted-foreground hover:text-foreground hover:border-foreground/15 hover:bg-foreground/5 transition-colors cursor-pointer"
@@ -187,6 +225,13 @@ function CommentsList() {
 
   return (
     <div className="h-full flex flex-col pt-3 gap-3">
+      {/* Claude plan banner */}
+      {isClaudePlan && (
+        <div className="pr-6">
+          <PlanCommentsBanner />
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between pr-6">
         <Badge

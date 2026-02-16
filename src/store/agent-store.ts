@@ -10,6 +10,7 @@ import { getBaseDir } from "@/lib/utils";
 const AGENT_CONFIGS_KEY = "agent-configs";
 const REGISTRY_LOADED_KEY = "registry-loaded";
 const LAST_SELECTED_AGENT_KEY = "last-selected-agent";
+const DEFAULT_AGENT_ID = "claude-code-acp";
 const ACP_REGISTRY_URL =
   "https://cdn.agentclientprotocol.com/registry/v1/latest/registry.json";
 
@@ -612,7 +613,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         set({
           agents: nextAgents,
           registryLoaded: true,
-          lastSelectedAgentId: lastAgent ?? null,
+          lastSelectedAgentId: lastAgent ?? DEFAULT_AGENT_ID,
         });
         return;
       }
@@ -625,7 +626,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       set({
         agents: registryAgents,
         registryLoaded: true,
-        lastSelectedAgentId: lastAgent ?? null,
+        lastSelectedAgentId: lastAgent ?? DEFAULT_AGENT_ID,
       });
 
       await persistAgentSettings(registryAgents, true);

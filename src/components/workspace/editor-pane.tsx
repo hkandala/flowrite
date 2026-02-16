@@ -11,13 +11,14 @@ import {
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
+import { toast } from "sonner";
 import matter from "gray-matter";
 import { MarkdownPlugin } from "@platejs/markdown";
 import { getCommentKey } from "@platejs/comment";
 import { CommentPlugin } from "@platejs/comment/react";
 import { nanoid, NodeApi } from "platejs";
 
-import { cn, getBaseDir, isInternalPath } from "@/lib/utils";
+import { cn, getBaseDir, isClaudePlanFile, isInternalPath } from "@/lib/utils";
 import { FILE_WATCHER_EVENT } from "@/lib/constants";
 import { Editor as PlateEditor, EditorContainer } from "@/components/ui/editor";
 import { Kbd } from "@/components/ui/kbd";
@@ -980,6 +981,14 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
           }
 
           setEditor(ed);
+
+          // Nudge user when opening a Claude plan file
+          if (isClaudePlanFile(filePath)) {
+            toast("claude plan detected", {
+              description:
+                "add your comments with ⌘D, then use the comments panel to copy a prompt you can paste into Claude Code.",
+            });
+          }
 
           // mark initial load complete after editor settles
           requestAnimationFrame(() => {
