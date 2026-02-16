@@ -13,15 +13,15 @@ export function RightPanel() {
   const activeTab = useAgentStore((s) =>
     s.chatTabs.find((t) => t.id === s.activeChatTabId),
   );
-  const session = useAgentStore((s) => {
+  const hasSession = useAgentStore((s) => {
     const tab = s.chatTabs.find((t) => t.id === s.activeChatTabId);
-    return tab?.sessionId ? s.sessions[tab.sessionId] : null;
+    return tab?.sessionId ? !!s.sessions[tab.sessionId] : false;
   });
 
   const hasTab = !!activeTab;
   const isConnecting = activeTab?.isConnecting ?? false;
   const hasError = !!activeTab?.connectionError;
-  const isConnected = hasTab && !isConnecting && !hasError && !!session;
+  const isConnected = hasTab && !isConnecting && !hasError && hasSession;
 
   const statusDotClass = isConnected
     ? "bg-emerald-500"

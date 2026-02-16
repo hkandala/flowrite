@@ -1,4 +1,11 @@
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import {
+  memo,
+  startTransition,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
 import { MarkdownPlugin, remarkMdx } from "@platejs/markdown";
 import { KEYS, createSlateEditor } from "platejs";
@@ -67,11 +74,10 @@ export const ChatMarkdown = memo(function ChatMarkdown({
     if (elapsed >= THROTTLE_MS) {
       lastUpdateRef.current = now;
       lastDeserializedRef.current = children;
-      setValue(
-        editor
-          .getApi(MarkdownPlugin)
-          .markdown.deserialize(normalizeMarkdown(children)),
-      );
+      const deserialized = editor
+        .getApi(MarkdownPlugin)
+        .markdown.deserialize(normalizeMarkdown(children));
+      startTransition(() => setValue(deserialized));
       return;
     }
 
@@ -80,11 +86,10 @@ export const ChatMarkdown = memo(function ChatMarkdown({
       const content = lastContentRef.current;
       lastUpdateRef.current = Date.now();
       lastDeserializedRef.current = content;
-      setValue(
-        editor
-          .getApi(MarkdownPlugin)
-          .markdown.deserialize(normalizeMarkdown(content)),
-      );
+      const deserialized = editor
+        .getApi(MarkdownPlugin)
+        .markdown.deserialize(normalizeMarkdown(content));
+      startTransition(() => setValue(deserialized));
     }, THROTTLE_MS - elapsed);
 
     return () => clearTimeout(id);

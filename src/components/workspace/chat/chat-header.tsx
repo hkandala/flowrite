@@ -11,15 +11,15 @@ export function ChatHeader() {
   const activeTab = useAgentStore((s) =>
     s.chatTabs.find((t) => t.id === s.activeChatTabId),
   );
-  const session = useAgentStore((s) => {
+  const sessionAgentName = useAgentStore((s) => {
     const tab = s.chatTabs.find((t) => t.id === s.activeChatTabId);
-    return tab?.sessionId ? s.sessions[tab.sessionId] : null;
+    return tab?.sessionId ? s.sessions[tab.sessionId]?.agentName : undefined;
   });
   const closeTab = useAgentStore((s) => s.closeTab);
 
   const [settingsOpen, setSettingsOpen] = useState(false);
 
-  const agentName = session?.agentName ?? activeTab?.label ?? "ai agent";
+  const agentName = sessionAgentName ?? activeTab?.label ?? "ai agent";
 
   return (
     <div className="shrink-0 px-1 py-2 pr-5">

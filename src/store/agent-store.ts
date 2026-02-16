@@ -356,10 +356,21 @@ const updateAssistantMessage = (
   messages: ChatMessage[],
   assistantId: string,
   updater: (message: ChatMessage) => ChatMessage,
-) =>
-  messages.map((message) =>
+) => {
+  // Streaming assistant message is always last — check there first
+  const lastIdx = messages.length - 1;
+  if (lastIdx >= 0 && messages[lastIdx].id === assistantId) {
+    const updated = updater(messages[lastIdx]);
+    if (updated === messages[lastIdx]) return messages;
+    const next = messages.slice();
+    next[lastIdx] = updated;
+    return next;
+  }
+  // Fallback: full scan for edge cases
+  return messages.map((message) =>
     message.id === assistantId ? updater(message) : message,
   );
+};
 
 const deriveRegistryAgentCommand = (agent: RegistryAgent) => {
   const npx = agent.distribution?.npx;
@@ -973,7 +984,101 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
     }));
 
     const onEvent = new Channel<AgentEvent>();
+
+    // --- RAF batching for streaming chunks ---
+    let pendingTextChunks = "";
+    let pendingThinkingChunks = "";
+    let rafId: number | null = null;
+
+    const flushChunks = () => {
+      rafId = null;
+      const textToFlush = pendingTextChunks;
+      const thinkingToFlush = pendingThinkingChunks;
+      pendingTextChunks = "";
+      pendingThinkingChunks = "";
+
+      if (!textToFlush && !thinkingToFlush) return;
+
+      set((current) => {
+        const sess = current.sessions[sessionId];
+        if (!sess) return {};
+
+        let nextMessages = sess.messages;
+
+        if (textToFlush) {
+          nextMessages = updateAssistantMessage(
+            nextMessages,
+            assistantMessageId,
+            (message) => {
+              const segments = [...message.segments];
+              const last = segments[segments.length - 1];
+              if (last?.type === "text") {
+                segments[segments.length - 1] = {
+                  ...last,
+                  content: last.content + textToFlush,
+                };
+              } else {
+                segments.push({ type: "text", content: textToFlush });
+              }
+              return {
+                ...message,
+                content: `${message.content}${textToFlush}`,
+                segments,
+              };
+            },
+          );
+        }
+
+        if (thinkingToFlush) {
+          nextMessages = updateAssistantMessage(
+            nextMessages,
+            assistantMessageId,
+            (message) => ({
+              ...message,
+              thinking: `${message.thinking}${thinkingToFlush}`,
+              thinkingStartedAt: message.thinkingStartedAt ?? Date.now(),
+            }),
+          );
+        }
+
+        return {
+          sessions: {
+            ...current.sessions,
+            [sessionId]: { ...sess, messages: nextMessages },
+          },
+        };
+      });
+    };
+
+    const scheduleFlush = () => {
+      if (rafId === null) {
+        rafId = requestAnimationFrame(flushChunks);
+      }
+    };
+
+    const flushChunksSync = () => {
+      if (rafId !== null) {
+        cancelAnimationFrame(rafId);
+        rafId = null;
+      }
+      flushChunks();
+    };
+
     onEvent.onmessage = (event) => {
+      switch (event.event) {
+        case "messageChunk":
+          pendingTextChunks += event.data.text;
+          scheduleFlush();
+          return;
+        case "thinkingChunk":
+          pendingThinkingChunks += event.data.text;
+          scheduleFlush();
+          return;
+      }
+
+      // For all other events, flush pending chunks first to preserve order
+      flushChunksSync();
+
       set((current) => {
         const sess = current.sessions[sessionId];
         if (!sess) return {};
@@ -981,40 +1086,6 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
         const updated = { ...sess };
 
         switch (event.event) {
-          case "messageChunk":
-            updated.messages = updateAssistantMessage(
-              sess.messages,
-              assistantMessageId,
-              (message) => {
-                const segments = [...message.segments];
-                const last = segments[segments.length - 1];
-                if (last?.type === "text") {
-                  segments[segments.length - 1] = {
-                    ...last,
-                    content: last.content + event.data.text,
-                  };
-                } else {
-                  segments.push({ type: "text", content: event.data.text });
-                }
-                return {
-                  ...message,
-                  content: `${message.content}${event.data.text}`,
-                  segments,
-                };
-              },
-            );
-            break;
-          case "thinkingChunk":
-            updated.messages = updateAssistantMessage(
-              sess.messages,
-              assistantMessageId,
-              (message) => ({
-                ...message,
-                thinking: `${message.thinking}${event.data.text}`,
-                thinkingStartedAt: message.thinkingStartedAt ?? Date.now(),
-              }),
-            );
-            break;
           case "toolCallUpdate":
             updated.messages = updateAssistantMessage(
               sess.messages,

@@ -25,6 +25,7 @@ import {
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { useAgentStore } from "@/store/agent-store";
+import { useShallow } from "zustand/react/shallow";
 import { useWorkspaceStore } from "@/store/workspace-store";
 import { getOpenFiles } from "@/store/workspace-store";
 import { FileReferenceKit } from "@/components/chat/plugins/file-reference-kit";
@@ -131,10 +132,22 @@ export function ChatInput() {
   const activeTab = useAgentStore((s) =>
     s.chatTabs.find((t) => t.id === s.activeChatTabId),
   );
-  const session = useAgentStore((s) => {
-    const tab = s.chatTabs.find((t) => t.id === s.activeChatTabId);
-    return tab?.sessionId ? s.sessions[tab.sessionId] : null;
-  });
+  const session = useAgentStore(
+    useShallow((s) => {
+      const tab = s.chatTabs.find((t) => t.id === s.activeChatTabId);
+      const sess = tab?.sessionId ? s.sessions[tab.sessionId] : null;
+      if (!sess) return null;
+      return {
+        sessionId: sess.sessionId,
+        isResponding: sess.isResponding,
+        availableModes: sess.availableModes,
+        currentModeId: sess.currentModeId,
+        availableModels: sess.availableModels,
+        currentModelId: sess.currentModelId,
+        availableCommands: sess.availableCommands,
+      };
+    }),
+  );
   const sendPromptAction = useAgentStore((s) => s.sendPrompt);
   const cancelPromptAction = useAgentStore((s) => s.cancelPrompt);
   const setModeAction = useAgentStore((s) => s.setMode);

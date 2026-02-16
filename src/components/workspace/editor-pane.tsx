@@ -58,6 +58,7 @@ import type { TComment } from "@/components/ui/comment";
 
 const BUTTON_TIMEOUT = 1500;
 const SCROLL_DEBOUNCE = 300;
+const FILE_WATCHER_DEBOUNCE = 300;
 
 /** Get the last element of an array (ES2020-safe alternative to .at(-1)) */
 function lastElement<T>(arr: T[]): T | undefined {
@@ -515,6 +516,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
   // file watcher self-save guard
   const lastSaveTimestampRef = useRef(0);
+  // file watcher debounce timer
+  const fileWatcherDebounceRef =
+    useRef<ReturnType<typeof setTimeout>>(undefined);
 
   // orphan discussion cleanup timer
   const orphanCleanupTimerRef =
@@ -1048,95 +1052,95 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     let unlisten: (() => void) | null = null;
 
+    const doReload = async () => {
+      // Guard against self-edits: skip events within 1s of a save
+      if (Date.now() - lastSaveTimestampRef.current < 1000) return;
+
+      // Guard: editor must be loaded
+      if (!initialLoadCompleteRef.current) return;
+
+      try {
+        const rawContent = await invoke<string>("read_file", {
+          path: filePath,
+        });
+        const parsed = matter(rawContent);
+
+        // Deserialize new content to Plate nodes
+        const currentDiscussions = JSON.stringify(
+          metadataRef.current.discussions ?? null,
+        );
+        const newDiscussions = JSON.stringify(parsed.data.discussions ?? null);
+        const discussionsChanged = currentDiscussions !== newDiscussions;
+
+        let newNodes: any[];
+
+        if (parsed.data.discussions && Array.isArray(parsed.data.discussions)) {
+          // Re-deserialize discussions with ephemeral markers
+          const discussionState = deserializeDiscussions(
+            parsed.content,
+            parsed.data.discussions,
+          );
+          newNodes = editor
+            .getApi(MarkdownPlugin)
+            .markdown.deserialize(discussionState.markedMarkdown);
+          stripMarkersAndApplyComments(newNodes);
+
+          // Update discussion plugin options to match re-generated IDs
+          editor.setOption(
+            discussionPlugin,
+            "discussions",
+            discussionState.discussions,
+          );
+          editor.setOption(discussionPlugin, "users", {
+            ...editor.getOption(discussionPlugin, "users"),
+            ...discussionState.users,
+          });
+        } else {
+          newNodes = editor
+            .getApi(MarkdownPlugin)
+            .markdown.deserialize(parsed.content);
+        }
+
+        // Compare before replacing to avoid spurious undo entries
+        const currentMarkdown = editor
+          .getApi(MarkdownPlugin)
+          .markdown.serialize();
+        const newMarkdown = parsed.content;
+        if (currentMarkdown === newMarkdown && !discussionsChanged) {
+          return;
+        }
+
+        // Replace editor content in-place (preserves undo history)
+        editor.tf.replaceNodes(newNodes, { at: [], children: true });
+
+        // Update metadata and dirty tracking baseline
+        metadataRef.current = parsed.data;
+        hasOriginalFrontmatterRef.current = Object.keys(parsed.data).length > 0;
+        savedUndoRef.current = lastElement(editor.history.undos) ?? null;
+        markClean(props.api.id);
+      } catch (err) {
+        console.error("file watcher reload failed:", err);
+      }
+    };
+
     const setup = async () => {
       unlisten = await listen<{
         fileChanges: { path: string; kind: string }[];
         directoryChanges: string[];
-      }>(FILE_WATCHER_EVENT, async (event) => {
-        // Check if current file appears in any file change event.
-        // We match any kind (not just "modify") because atomic saves
-        // on macOS can produce "delete" events when the rename source
-        // is a hidden temp file that gets filtered by the watcher.
-        // We verify the file still exists by attempting to read it.
+      }>(FILE_WATCHER_EVENT, (event) => {
         const match = event.payload.fileChanges.find(
           (change) => change.path === filePath,
         );
         if (!match) return;
 
-        // Guard against self-edits: skip events within 1s of a save
-        if (Date.now() - lastSaveTimestampRef.current < 1000) return;
-
-        // Guard: editor must be loaded
-        if (!initialLoadCompleteRef.current) return;
-
-        try {
-          const rawContent = await invoke<string>("read_file", {
-            path: filePath,
-          });
-          const parsed = matter(rawContent);
-
-          // Deserialize new content to Plate nodes
-          const currentDiscussions = JSON.stringify(
-            metadataRef.current.discussions ?? null,
-          );
-          const newDiscussions = JSON.stringify(
-            parsed.data.discussions ?? null,
-          );
-          const discussionsChanged = currentDiscussions !== newDiscussions;
-
-          let newNodes: any[];
-
-          if (
-            parsed.data.discussions &&
-            Array.isArray(parsed.data.discussions)
-          ) {
-            // Re-deserialize discussions with ephemeral markers
-            const discussionState = deserializeDiscussions(
-              parsed.content,
-              parsed.data.discussions,
-            );
-            newNodes = editor
-              .getApi(MarkdownPlugin)
-              .markdown.deserialize(discussionState.markedMarkdown);
-            stripMarkersAndApplyComments(newNodes);
-
-            // Update discussion plugin options to match re-generated IDs
-            editor.setOption(
-              discussionPlugin,
-              "discussions",
-              discussionState.discussions,
-            );
-            editor.setOption(discussionPlugin, "users", {
-              ...editor.getOption(discussionPlugin, "users"),
-              ...discussionState.users,
-            });
-          } else {
-            newNodes = editor
-              .getApi(MarkdownPlugin)
-              .markdown.deserialize(parsed.content);
-          }
-
-          // Compare before replacing to avoid spurious undo entries
-          const currentMarkdown = editor
-            .getApi(MarkdownPlugin)
-            .markdown.serialize();
-          const newMarkdown = parsed.content;
-          if (currentMarkdown === newMarkdown && !discussionsChanged) {
-            return;
-          }
-
-          // Replace editor content in-place (preserves undo history)
-          editor.tf.replaceNodes(newNodes, { at: [], children: true });
-
-          // Update metadata and dirty tracking baseline
-          metadataRef.current = parsed.data;
-          hasOriginalFrontmatterRef.current =
-            Object.keys(parsed.data).length > 0;
-          savedUndoRef.current = lastElement(editor.history.undos) ?? null;
-          markClean(props.api.id);
-        } catch (err) {
-          console.error("file watcher reload failed:", err);
+        // Debounce rapid writes (e.g. agent editing)
+        if (fileWatcherDebounceRef.current) {
+          clearTimeout(fileWatcherDebounceRef.current);
         }
+        fileWatcherDebounceRef.current = setTimeout(
+          doReload,
+          FILE_WATCHER_DEBOUNCE,
+        );
       });
     };
 
@@ -1144,6 +1148,9 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
 
     return () => {
       if (unlisten) unlisten();
+      if (fileWatcherDebounceRef.current) {
+        clearTimeout(fileWatcherDebounceRef.current);
+      }
     };
   }, [filePath, isExternal, editor]);
 
