@@ -58,20 +58,24 @@ const CLAUDE_PLAN_PROMPT = `I have added my review comments in YAML frontmatter.
 function PlanCommentsBanner() {
   const handleCopy = React.useCallback(() => {
     navigator.clipboard.writeText(CLAUDE_PLAN_PROMPT);
-    toast.success("Prompt copied to clipboard");
+    toast.success("prompt copied to clipboard");
   }, []);
 
   return (
     <div className="flex items-center justify-between gap-2 rounded-lg border border-border/60 bg-foreground/3 px-3 py-2.5 text-xs text-muted-foreground">
       <span>
-        Add your comments with <kbd className="rounded border px-1 py-0.5 text-[10px] font-mono bg-foreground/5">⌘D</kbd>, then copy the prompt for Claude Code.
+        add your comments with{" "}
+        <kbd className="rounded border px-1 py-0.5 text-[10px] font-mono bg-foreground/5">
+          ⌘D
+        </kbd>
+        , then copy the prompt for Claude Code.
       </span>
       <button
         onClick={handleCopy}
         className="flex shrink-0 items-center gap-1.5 rounded-md border px-2 py-1 text-xs text-foreground/70 hover:bg-foreground/8 hover:text-foreground transition-colors cursor-pointer"
       >
         <ClipboardCopy className="h-3 w-3" />
-        Copy prompt
+        copy prompt
       </button>
     </div>
   );
@@ -206,19 +210,21 @@ function CommentsList() {
 
   if (activeDiscussions.length === 0 && !isDraft && !showDocComment) {
     return (
-      <div className="h-full flex flex-col items-center justify-center gap-5 text-muted-foreground p-3">
+      <div className="h-full flex flex-col text-muted-foreground">
         {isClaudePlan && (
-          <div className="absolute top-3 left-0 right-0 pr-6">
+          <div className="pr-6 pt-3 pb-4">
             <PlanCommentsBanner />
           </div>
         )}
-        <button
-          onClick={() => setShowDocComment(true)}
-          className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8 text-muted-foreground hover:text-foreground hover:border-foreground/15 hover:bg-foreground/5 transition-colors cursor-pointer"
-        >
-          <MessageSquarePlus className="h-5 w-5" />
-        </button>
-        <span className="text-sm">add new comment</span>
+        <div className="flex-1 flex flex-col items-center justify-center gap-5 p-3">
+          <button
+            onClick={() => setShowDocComment(true)}
+            className="flex h-10 w-10 items-center justify-center rounded-xl border border-foreground/8 text-muted-foreground hover:text-foreground hover:border-foreground/15 hover:bg-foreground/5 transition-colors cursor-pointer"
+          >
+            <MessageSquarePlus className="h-5 w-5" />
+          </button>
+          <span className="text-sm">add new comment</span>
+        </div>
       </div>
     );
   }
@@ -227,7 +233,7 @@ function CommentsList() {
     <div className="h-full flex flex-col pt-3 gap-3">
       {/* Claude plan banner */}
       {isClaudePlan && (
-        <div className="pr-6">
+        <div className="pr-6 pb-2">
           <PlanCommentsBanner />
         </div>
       )}

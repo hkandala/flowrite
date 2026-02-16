@@ -8,9 +8,9 @@ flowrite is a markdown editor with built-in AI agent support. write, edit, and c
 
 ## why flowrite
 
-AI agents have changed how we work. markdown has become the default format for everything from documentation to project specs to knowledge bases, and agents are increasingly part of the writing and editing process.
+working with AI agents on documents today is fragmented. you write in one app, switch to your agent's terminal to ask for edits, copy the output back, paste it in, review the diff manually, and repeat. context is lost, flow is broken, and you spend more time managing the back-and-forth than actually writing.
 
-but the current experience is fragmented. you write in one app, switch to your agent's terminal to ask for edits, copy the output back, paste it in, review the diff manually, and repeat. context is lost, flow is broken, and you spend more time managing the back-and-forth than actually writing. flowrite was built to fix this — bringing AI collaboration directly into the editor so you never have to leave your writing environment.
+flowrite was built to fix this. it brings AI collaboration directly into the editor — agents can read your files, suggest changes, leave inline comments, and respond to your feedback, all without leaving your writing environment.
 
 ## features
 

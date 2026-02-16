@@ -50,12 +50,14 @@ export function CommandPalette() {
       });
   }, [open]);
 
-  const isExternalPath = query.startsWith("/") || query.startsWith("~");
+  const trimmedQuery = query.trim();
+  const isExternalPath =
+    trimmedQuery.startsWith("/") || trimmedQuery.startsWith("~");
 
   // filtered workspace files
   const filtered = useMemo(() => {
     if (isExternalPath) return [];
-    const q = query.toLowerCase();
+    const q = trimmedQuery.toLowerCase();
     return files
       .filter((f) => {
         const name = getFileName(f.path);
@@ -67,7 +69,7 @@ export function CommandPalette() {
         );
       })
       .slice(0, 10);
-  }, [files, query, isExternalPath]);
+  }, [files, trimmedQuery, isExternalPath]);
 
   const handleSelectFile = (filePath: string) => {
     openFile(filePath);
@@ -76,7 +78,7 @@ export function CommandPalette() {
   };
 
   const handleSelectExternalPath = async () => {
-    let resolvedPath = query;
+    let resolvedPath = trimmedQuery;
     if (resolvedPath.startsWith("~")) {
       try {
         const home = await homeDir();
@@ -128,7 +130,7 @@ export function CommandPalette() {
           <CommandGroup>
             <CommandItem onSelect={handleSelectExternalPath}>
               <FolderOpen className="h-4 w-4" />
-              <span className="truncate">open {query}</span>
+              <span className="truncate">open {trimmedQuery}</span>
             </CommandItem>
           </CommandGroup>
         ) : (
