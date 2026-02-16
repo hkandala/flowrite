@@ -23,7 +23,7 @@ flowrite was built to fix this. it brings AI collaboration directly into the edi
 
 ## installation
 
-download the latest `.zip` file for macOS from the [releases page](https://github.com/nicholasgriffintn/flowrite/releases). extract the archive to get the `.app` file, then move it to your Applications folder.
+download the latest `.zip` file for macOS from the [releases page](https://github.com/hkandala/flowrite/releases/). extract the archive to get the `.app` file, then move it to your Applications folder.
 
 ## quick start
 
