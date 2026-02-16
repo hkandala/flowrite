@@ -101,7 +101,7 @@ export function AgentSettingsModal({
       name: customName.trim() || "custom agent",
       command: customCommand.trim(),
       env,
-      description: "custom ACP agent",
+      description: "custom AI agent",
       version: "custom",
     });
 
@@ -114,9 +114,9 @@ export function AgentSettingsModal({
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-3xl h-[85vh] flex flex-col p-0">
         <DialogHeader className="px-6 pt-6 pb-2">
-          <DialogTitle>acp agent providers</DialogTitle>
+          <DialogTitle>ai agent providers</DialogTitle>
           <DialogDescription>
-            configure or add your ACP agents
+            configure or add your AI agents
           </DialogDescription>
         </DialogHeader>
 

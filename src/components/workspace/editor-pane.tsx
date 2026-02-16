@@ -20,6 +20,7 @@ import { nanoid, NodeApi } from "platejs";
 import { cn, getBaseDir, isInternalPath } from "@/lib/utils";
 import { FILE_WATCHER_EVENT } from "@/lib/constants";
 import { Editor as PlateEditor, EditorContainer } from "@/components/ui/editor";
+import { Kbd } from "@/components/ui/kbd";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -1288,7 +1289,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             </button>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={4}>
-            {isFullWidth ? "center content" : "full width"}
+            {isFullWidth ? "center content" : "full width"} <Kbd>⌘⇧-</Kbd>
           </TooltipContent>
         </Tooltip>
 
@@ -1311,7 +1312,7 @@ export function EditorPane(props: IDockviewPanelProps<EditorPaneParams>) {
             </button>
           </TooltipTrigger>
           <TooltipContent side="bottom" sideOffset={4}>
-            {editorMaximized ? "minimize" : "maximize"}
+            {editorMaximized ? "minimize" : "maximize"} <Kbd>⌘⇧=</Kbd>
           </TooltipContent>
         </Tooltip>
       </div>

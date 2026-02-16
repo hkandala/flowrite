@@ -175,7 +175,7 @@ function AgentSelectionView() {
           className="mt-1 w-full text-xs text-muted-foreground"
           onClick={() => setSettingsOpen(true)}
         >
-          configure acp agents
+          configure ai agents
         </Button>
         <AgentSettingsModal
           open={settingsOpen}

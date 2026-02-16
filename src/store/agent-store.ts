@@ -664,7 +664,7 @@ export const useAgentStore = create<AgentStore>((set, get) => ({
       id: `custom-${createId()}`,
       name: config.name.trim() || "custom agent",
       version: config.version?.trim() || "custom",
-      description: config.description?.trim() || "custom ACP agent",
+      description: config.description?.trim() || "custom AI agent",
       command,
       env: config.env ?? {},
       source: "custom",

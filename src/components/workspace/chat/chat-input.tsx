@@ -310,7 +310,7 @@ export function ChatInput() {
           <Plate editor={chatEditor} onChange={handleEditorChange}>
             <PlateContent
               className="w-full bg-transparent p-4 text-sm outline-none"
-              placeholder="ask ai anything..."
+              placeholder="ask ai or use / commands..."
               onKeyDown={handleKeyDown}
             />
           </Plate>

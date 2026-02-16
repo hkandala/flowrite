@@ -8,6 +8,8 @@ import {
 import { KEYS } from "platejs";
 import { useEditorReadOnly } from "platejs/react";
 
+import { Kbd } from "./kbd";
+import { AskAiToolbarButton } from "./ask-ai-toolbar-button";
 import { LinkToolbarButton } from "./link-toolbar-button";
 import { MarkToolbarButton } from "./mark-toolbar-button";
 import { ToolbarGroup } from "./toolbar";
@@ -24,29 +26,38 @@ export function FloatingToolbarButtons() {
           <ToolbarGroup>
             <TurnIntoToolbarButton />
 
-            <MarkToolbarButton nodeType={KEYS.bold} tooltip="bold (⌘+B)">
+            <MarkToolbarButton
+              nodeType={KEYS.bold}
+              tooltip={<>bold <Kbd>⌘B</Kbd></>}
+            >
               <BoldIcon />
             </MarkToolbarButton>
 
-            <MarkToolbarButton nodeType={KEYS.italic} tooltip="italic (⌘+I)">
+            <MarkToolbarButton
+              nodeType={KEYS.italic}
+              tooltip={<>italic <Kbd>⌘I</Kbd></>}
+            >
               <ItalicIcon />
             </MarkToolbarButton>
 
             <MarkToolbarButton
               nodeType={KEYS.underline}
-              tooltip="underline (⌘+U)"
+              tooltip={<>underline <Kbd>⌘U</Kbd></>}
             >
               <UnderlineIcon />
             </MarkToolbarButton>
 
             <MarkToolbarButton
               nodeType={KEYS.strikethrough}
-              tooltip="strikethrough (⌘+⇧+M)"
+              tooltip={<>strikethrough <Kbd>⌘⇧M</Kbd></>}
             >
               <StrikethroughIcon />
             </MarkToolbarButton>
 
-            <MarkToolbarButton nodeType={KEYS.code} tooltip="code (⌘+E)">
+            <MarkToolbarButton
+              nodeType={KEYS.code}
+              tooltip={<>code <Kbd>⌘E</Kbd></>}
+            >
               <Code2Icon />
             </MarkToolbarButton>
 
@@ -54,6 +65,7 @@ export function FloatingToolbarButtons() {
           </ToolbarGroup>
           <ToolbarGroup>
             <CommentToolbarButton />
+            <AskAiToolbarButton />
           </ToolbarGroup>
         </>
       )}
